@@ -12,6 +12,7 @@ A virtual memecoin trading site with only ONE coin.
 - live view, 1m, 5m, 10, 1hr, all time view options.
 - Market cap moves accurately.
 - Random big dips and massive jumps.
+- Each user account has a username and custom profile from link.
 ---
 - Website Favicon https://avatars.githubusercontent.com/u/298894342?s=60&v=4
 - Coin Logo https://avatars.githubusercontent.com/u/298894342?s=60&v=4
