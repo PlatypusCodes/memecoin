@@ -16,4 +16,6 @@ A virtual memecoin trading site with only ONE coin.
 - Website Favicon https://avatars.githubusercontent.com/u/298894342?s=60&v=4
 - Coin Logo https://avatars.githubusercontent.com/u/298894342?s=60&v=4
 - Coin Name "Platypus"
+---
+
 
