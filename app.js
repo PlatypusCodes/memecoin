@@ -3,7 +3,8 @@
 // ===========================================================
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
 import {
-  getAuth, signInAnonymously, onAuthStateChanged
+  getAuth, onAuthStateChanged,
+  createUserWithEmailAndPassword, signInWithEmailAndPassword
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot,
@@ -93,14 +94,26 @@ function showApp() {
   el("authGate").classList.add("hidden");
   el("app").classList.remove("hidden");
 }
-function showOnboard() {
+function showAuthTabs(mode) {
   el("authLoading").classList.add("hidden");
-  el("onboardForm").classList.remove("hidden");
+  el("authTabs").classList.remove("hidden");
+  setAuthMode(mode || "signup");
 }
+function setAuthMode(mode) {
+  document.querySelectorAll(".auth-tab").forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
+  el("onboardForm").classList.toggle("hidden", mode !== "signup");
+  el("loginForm").classList.toggle("hidden", mode !== "login");
+}
+document.querySelectorAll(".auth-tab").forEach(btn => {
+  btn.addEventListener("click", () => setAuthMode(btn.dataset.mode));
+});
+
+let authBusy = false;
 
 onAuthStateChanged(auth, async (user) => {
+  if (authBusy) return; // we're mid sign-up/login, let those flows drive state
   if (!user) {
-    try { await signInAnonymously(auth); } catch (e) { authError("Could not connect: " + e.message); }
+    showAuthTabs("signup");
     return;
   }
   const uref = doc(usersCol, user.uid);
@@ -110,13 +123,31 @@ onAuthStateChanged(auth, async (user) => {
     subscribeUser(uref);
     boot();
   } else {
-    showOnboard();
+    // authed but no profile yet (shouldn't normally happen) — send to signup to finish profile
     window.__pendingUserRef = uref;
+    window.__pendingEmail = user.email;
+    showAuthTabs("signup");
   }
 });
 
 function authError(msg) {
   el("authError").textContent = msg;
+}
+function loginError(msg) {
+  el("loginError").textContent = msg;
+}
+function friendlyAuthError(code) {
+  const map = {
+    "auth/email-already-in-use": "That email already has an account — try logging in instead.",
+    "auth/invalid-email": "That email address doesn't look right.",
+    "auth/weak-password": "Password needs to be at least 6 characters.",
+    "auth/wrong-password": "Wrong password.",
+    "auth/user-not-found": "No account found with that email.",
+    "auth/invalid-credential": "Email or password is incorrect.",
+    "auth/too-many-requests": "Too many attempts — wait a bit and try again.",
+    "auth/operation-not-allowed": "Email/password sign-in isn't enabled on this project yet."
+  };
+  return map[code] || code || "Something went wrong.";
 }
 
 el("avatarInput").addEventListener("input", () => {
@@ -133,27 +164,77 @@ el("usernameInput").addEventListener("input", () => {
 
 el("onboardForm").addEventListener("submit", async (e) => {
   e.preventDefault();
+  authError("");
   const username = el("usernameInput").value.trim().slice(0, 18);
   if (!username) { authError("Pick a username."); return; }
   const avatarUrl = el("avatarInput").value.trim() || DEFAULT_AVATAR;
-  const uref = window.__pendingUserRef;
+  const email = el("signupEmail").value.trim();
+  const password = el("signupPassword").value;
+
   el("onboardSubmit").disabled = true;
   el("onboardSubmit").textContent = "Diving in…";
+  authBusy = true;
   try {
+    let uref = window.__pendingUserRef;
+    let uid = uref ? uref.id : null;
+
+    if (!uid) {
+      const cred = await createUserWithEmailAndPassword(auth, email, password);
+      uid = cred.user.uid;
+      uref = doc(usersCol, uid);
+    }
+
     const data = {
       username, avatarUrl,
+      email: email || window.__pendingEmail || "",
       balance: STARTING_BALANCE,
       holdings: 0,
       createdAt: Date.now()
     };
     await setDoc(uref, data);
-    currentUser = { uid: uref.id, ...data };
+    currentUser = { uid, ...data };
     subscribeUser(uref);
+    authBusy = false;
     boot();
   } catch (err) {
-    authError(err.message);
+    authError(friendlyAuthError(err.code) || err.message);
     el("onboardSubmit").disabled = false;
     el("onboardSubmit").textContent = "Enter the pond";
+    authBusy = false;
+  }
+});
+
+el("loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  loginError("");
+  const email = el("loginEmail").value.trim();
+  const password = el("loginPassword").value;
+  el("loginSubmit").disabled = true;
+  el("loginSubmit").textContent = "Logging in…";
+  authBusy = true;
+  try {
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    const uref = doc(usersCol, cred.user.uid);
+    const snap = await getDoc(uref);
+    if (!snap.exists()) {
+      // account exists in auth but no profile — send them to finish signup
+      window.__pendingUserRef = uref;
+      window.__pendingEmail = email;
+      authBusy = false;
+      setAuthMode("signup");
+      el("loginSubmit").disabled = false;
+      el("loginSubmit").textContent = "Log in";
+      return;
+    }
+    currentUser = { uid: cred.user.uid, ...snap.data() };
+    subscribeUser(uref);
+    authBusy = false;
+    boot();
+  } catch (err) {
+    loginError(friendlyAuthError(err.code) || err.message);
+    el("loginSubmit").disabled = false;
+    el("loginSubmit").textContent = "Log in";
+    authBusy = false;
   }
 });
 

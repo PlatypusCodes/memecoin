@@ -29,6 +29,12 @@
       <span>Connecting to the pond…</span>
     </div>
 
+    <div id="authTabs" class="auth-tabs hidden">
+      <button class="auth-tab active" data-mode="signup">Sign up</button>
+      <button class="auth-tab" data-mode="login">Log in</button>
+    </div>
+
+    <!-- SIGN UP -->
     <form id="onboardForm" class="onboard-form hidden">
       <label class="field">
         <span class="field-label">Username</span>
@@ -45,8 +51,30 @@
           <span class="onboard-preview-balance">starts with $10,000.00 paper cash</span>
         </div>
       </div>
+      <label class="field">
+        <span class="field-label">Email</span>
+        <input id="signupEmail" type="email" placeholder="you@example.com" autocomplete="email" required />
+      </label>
+      <label class="field">
+        <span class="field-label">Password</span>
+        <input id="signupPassword" type="password" placeholder="At least 6 characters" autocomplete="new-password" required />
+      </label>
       <button type="submit" class="btn btn-primary btn-block" id="onboardSubmit">Enter the pond</button>
       <p class="auth-error" id="authError"></p>
+    </form>
+
+    <!-- LOG IN -->
+    <form id="loginForm" class="onboard-form hidden">
+      <label class="field">
+        <span class="field-label">Email</span>
+        <input id="loginEmail" type="email" placeholder="you@example.com" autocomplete="email" required />
+      </label>
+      <label class="field">
+        <span class="field-label">Password</span>
+        <input id="loginPassword" type="password" placeholder="Your password" autocomplete="current-password" required />
+      </label>
+      <button type="submit" class="btn btn-primary btn-block" id="loginSubmit">Log in</button>
+      <p class="auth-error" id="loginError"></p>
     </form>
   </div>
 </div>
