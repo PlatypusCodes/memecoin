@@ -97,7 +97,8 @@ function showApp() {
 function showAuthTabs(mode) {
   el("authLoading").classList.add("hidden");
   el("authTabs").classList.remove("hidden");
-  setAuthMode(mode || "signup");
+  const defaultMode = mode || (localStorage.getItem("plty_has_account") ? "login" : "signup");
+  setAuthMode(defaultMode);
 }
 function setAuthMode(mode) {
   document.querySelectorAll(".auth-tab").forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
@@ -113,7 +114,7 @@ let authBusy = false;
 onAuthStateChanged(auth, async (user) => {
   if (authBusy) return; // we're mid sign-up/login, let those flows drive state
   if (!user) {
-    showAuthTabs("signup");
+    showAuthTabs();
     return;
   }
   const uref = doc(usersCol, user.uid);
@@ -138,16 +139,22 @@ function loginError(msg) {
 }
 function friendlyAuthError(code) {
   const map = {
-    "auth/email-already-in-use": "That email already has an account — try logging in instead.",
+    "auth/email-already-in-use": "That email already has an account — switched you to Log in.",
     "auth/invalid-email": "That email address doesn't look right.",
     "auth/weak-password": "Password needs to be at least 6 characters.",
+    "auth/password-does-not-meet-requirements": "Password doesn't meet this project's policy — try 8+ characters with a number and a symbol.",
     "auth/wrong-password": "Wrong password.",
     "auth/user-not-found": "No account found with that email.",
     "auth/invalid-credential": "Email or password is incorrect.",
     "auth/too-many-requests": "Too many attempts — wait a bit and try again.",
     "auth/operation-not-allowed": "Email/password sign-in isn't enabled on this project yet."
   };
-  return map[code] || code || "Something went wrong.";
+  return map[code] || null;
+}
+function describeAuthErr(err) {
+  const friendly = friendlyAuthError(err.code);
+  if (friendly) return friendly;
+  return err.code ? `${err.message} (${err.code})` : (err.message || "Something went wrong.");
 }
 
 el("avatarInput").addEventListener("input", () => {
@@ -195,9 +202,17 @@ el("onboardForm").addEventListener("submit", async (e) => {
     currentUser = { uid, ...data };
     subscribeUser(uref);
     authBusy = false;
+    localStorage.setItem("plty_has_account", "1");
     boot();
   } catch (err) {
-    authError(friendlyAuthError(err.code) || err.message);
+    if (err.code === "auth/email-already-in-use") {
+      localStorage.setItem("plty_has_account", "1");
+      setAuthMode("login");
+      el("loginEmail").value = email;
+      loginError("That email already has an account — enter your password to log in.");
+    } else {
+      authError(describeAuthErr(err));
+    }
     el("onboardSubmit").disabled = false;
     el("onboardSubmit").textContent = "Enter the pond";
     authBusy = false;
@@ -229,9 +244,10 @@ el("loginForm").addEventListener("submit", async (e) => {
     currentUser = { uid: cred.user.uid, ...snap.data() };
     subscribeUser(uref);
     authBusy = false;
+    localStorage.setItem("plty_has_account", "1");
     boot();
   } catch (err) {
-    loginError(friendlyAuthError(err.code) || err.message);
+    loginError(describeAuthErr(err));
     el("loginSubmit").disabled = false;
     el("loginSubmit").textContent = "Log in";
     authBusy = false;
