@@ -1,4 +1,4 @@
-# memecoin
+# Memecoin - By the Platypus Team!
 A virtual memecoin trading site with only ONE coin. 
 ---
 **IDEAS**
