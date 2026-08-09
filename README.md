@@ -12,6 +12,9 @@ project/
 ├── app.js
 ├── firestore.rules
 └── README.md
+```
+
+
 **IDEAS**
 - Only one coin.
 - The coin goes up and down randomly, but player buys influence.
