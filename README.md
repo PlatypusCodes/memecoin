@@ -1,7 +1,7 @@
 # Memecoin - By the Platypus Team!
 A virtual memecoin trading site with only ONE coin. 
 ---
-[Live Site](https://platypuscodes.github.io/memecoin/)
+[Live Site](https://platypuscodes.github.io/memecoin/) 
 ---
 **IDEAS**
 - Only one coin.
