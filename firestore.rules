@@ -1,0 +1,85 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- users/{uid} ----------
+    // Each trader can only read/write their own profile & balance.
+    match /users/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+
+      allow create: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.username is string
+        && request.resource.data.username.size() > 0
+        && request.resource.data.username.size() <= 18
+        && request.resource.data.balance is number
+        && request.resource.data.balance >= 0
+        && request.resource.data.holdings is number
+        && request.resource.data.holdings >= 0;
+
+      allow update: if request.auth != null
+        && request.auth.uid == userId
+        // only these fields may ever change
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['balance', 'holdings', 'username', 'avatarUrl'])
+        && request.resource.data.balance is number
+        && request.resource.data.balance >= 0
+        && request.resource.data.holdings is number
+        && request.resource.data.holdings >= 0;
+
+      allow delete: if false;
+    }
+
+    // ---------- market/state ----------
+    // Single shared doc. Any signed-in trader can advance the price
+    // (tick loop) or move it via a trade transaction, never delete it.
+    match /market/{docId} {
+      allow read: if request.auth != null;
+
+      allow create: if request.auth != null
+        && request.resource.data.price is number
+        && request.resource.data.price > 0;
+
+      allow update: if request.auth != null
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['price', 'marketCap', 'lastTickIndex', 'priceOpen24h'])
+        && request.resource.data.price is number
+        && request.resource.data.price > 0;
+
+      allow delete: if false;
+    }
+
+    // ---------- ticks/{tickId} ----------
+    // Deterministic-ID price snapshots used to draw the candlestick chart.
+    // Any signed-in client may write one (harmless overwrite), none may delete.
+    match /ticks/{tickId} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null
+        && request.resource.data.price is number
+        && request.resource.data.price > 0
+        && request.resource.data.ts is number;
+      allow delete: if false;
+    }
+
+    // ---------- trades/{tradeId} ----------
+    // Public trade tape. A trader may only log a trade under their own
+    // uid, and trades are append-only (immutable history).
+    match /trades/{tradeId} {
+      allow read: if request.auth != null;
+
+      allow create: if request.auth != null
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.type in ['buy', 'sell']
+        && request.resource.data.usdAmount is number
+        && request.resource.data.usdAmount > 0
+        && request.resource.data.coinAmount is number
+        && request.resource.data.coinAmount > 0
+        && request.resource.data.price is number
+        && request.resource.data.price > 0
+        && request.resource.data.username is string;
+
+      allow update, delete: if false;
+    }
+  }
+}
