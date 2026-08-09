@@ -3,8 +3,15 @@ A virtual memecoin trading site with only ONE coin.
 ---
 [Live Site](https://platypuscodes.github.io/memecoin/) 
 ---
-**Structure**
-
+# Project Structure
+```text
+project/
+│
+├── index.html
+├── style.css
+├── app.js
+├── firestore.rules
+└── README.md
 **IDEAS**
 - Only one coin.
 - The coin goes up and down randomly, but player buys influence.
