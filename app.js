@@ -346,6 +346,11 @@ function subscribeMarket() {
   onSnapshot(marketRef, (snap) => {
     if (!snap.exists()) return;
     marketState = snap.data();
+    // Keep local tick cache in sync so advanceTick steps from the right place
+    if (marketState.lastTickIndex && marketState.lastTickIndex > _lastKnownTickIdx) {
+      _lastKnownTickIdx = marketState.lastTickIndex;
+      _lastKnownPrice   = marketState.price;
+    }
     renderTopStats();
     renderVial();
     renderWallet();
@@ -356,76 +361,58 @@ function subscribeMarket() {
   });
 }
 
-// ---------- collision-free tick engine ----------
-// The price is 100% deterministic from the tick index (seeded RNG).
-// So any tab can compute the correct price independently — no transaction needed.
-// Each tab writes its own tick doc via setDoc (idempotent, last-write-wins on
-// same key is fine since all tabs compute the same price for the same tickIdx).
-// market/state is updated with a plain updateDoc (no currentDocument constraint)
-// so there's no optimistic-lock conflict and no 400s.
+// ---------- tick engine ----------
+// Each tab reads the current price+tickIdx from Firestore, steps it forward
+// by however many ticks have elapsed (usually 1), then writes back with a plain
+// updateDoc — no transaction, no currentDocument constraint, no 400s.
+// Multiple tabs writing the same tick is fine: same seed → same price.
 
-// Tabs add a small random jitter so they don't all fire at the same millisecond.
-const TICK_JITTER = Math.floor(Math.random() * 800); // 0–800 ms
+const TICK_JITTER = Math.floor(Math.random() * 800);
 
-// Tick index is relative to EPOCH_TICK (the tick count at a fixed reference point)
-// so we never have to walk 595 million steps from zero.
-// We pick the reference as the tick index when the app first loads.
-const EPOCH_TICK = Math.floor(Date.now() / TICK_MS);
-
-// Compute deterministic price for a tick index relative to EPOCH_TICK.
-// We only ever walk a small number of steps forward from the last cached position.
-function priceAtTick(tickIdx) {
-  if (!priceAtTick._cache) {
-    priceAtTick._cache = { idx: EPOCH_TICK, price: STARTING_PRICE };
-  }
-  let { idx, price } = priceAtTick._cache;
-  if (tickIdx < idx) {
-    // Clock went backwards somehow — reset to epoch
-    idx = EPOCH_TICK; price = STARTING_PRICE;
-  }
-  // Walk forward only the delta (usually 1–5 steps per call)
-  for (let i = idx + 1; i <= tickIdx; i++) {
-    price = stepPrice(price, i);
-  }
-  priceAtTick._cache = { idx: tickIdx, price };
-  return price;
-}
+// Local cache of the last known market state so we don't re-read Firestore
+// on every tick — we update it from the onSnapshot listener instead.
+let _lastKnownPrice = STARTING_PRICE;
+let _lastKnownTickIdx = 0;
 
 async function advanceTick() {
-  if (document.hidden) return; // don't write when tab is backgrounded
+  if (document.hidden) return;
 
   const nowTick = Math.floor(Date.now() / TICK_MS);
-  const price = priceAtTick(nowTick);
-  const tid = `t_${nowTick}`;
+  const lastIdx = _lastKnownTickIdx || nowTick;
+  if (lastIdx >= nowTick) return; // already up to date
 
-  // Write tick doc — setDoc is idempotent, multiple tabs writing same key is fine
-  try {
-    await setDoc(doc(ticksCol, tid), { price, ts: nowTick * TICK_MS });
-  } catch (e) { return; } // network issue, skip this tick
+  // Step price forward from last known position (always a tiny number of steps)
+  let price = _lastKnownPrice;
+  const steps = Math.min(nowTick - lastIdx, 5);
+  for (let i = 1; i <= steps; i++) {
+    price = stepPrice(price, lastIdx + i);
+  }
+  const tickIdx = lastIdx + steps;
 
-  // Update market state with a plain write — no currentDocument constraint,
-  // no optimistic locking, no 400s. All tabs write the same deterministic price
-  // so last-write-wins is correct.
+  // Update local cache immediately so next call doesn't double-step
+  _lastKnownPrice = price;
+  _lastKnownTickIdx = tickIdx;
+
+  // Write tick doc (idempotent setDoc — no conflict possible)
   try {
-    await updateDoc(marketRef, {
-      price,
-      marketCap: price * TOTAL_SUPPLY,
-      lastTickIndex: nowTick
-    });
-  } catch (e) {
-    // If market doc doesn't exist yet, create it
+    await setDoc(doc(ticksCol, `t_${nowTick}`), { price, ts: nowTick * TICK_MS });
+  } catch (_) {}
+
+  // Update market state — plain write, no optimistic lock, no 400s
+  try {
+    await updateDoc(marketRef, { price, marketCap: price * TOTAL_SUPPLY, lastTickIndex: tickIdx });
+  } catch (_) {
+    // Doc may not exist yet on a fresh project
     try {
       await setDoc(marketRef, {
         price, marketCap: price * TOTAL_SUPPLY,
-        lastTickIndex: nowTick, priceOpen24h: STARTING_PRICE,
-        createdAt: Date.now()
+        lastTickIndex: tickIdx, priceOpen24h: STARTING_PRICE, createdAt: Date.now()
       });
     } catch (_) {}
   }
 }
 
 function startTickLoop() {
-  // Stagger first tick by jitter to reduce simultaneous writes across tabs
   setTimeout(() => {
     advanceTick();
     setInterval(advanceTick, TICK_MS);
