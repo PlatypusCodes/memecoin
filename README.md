@@ -10,7 +10,7 @@ project/
 ├── index.html
 ├── style.css
 ├── app.js
-├── firestore.rules - for documentation 
+├── firestore.rules 
 └── README.md
 ```
 
