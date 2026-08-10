@@ -367,18 +367,23 @@ function subscribeMarket() {
 // Tabs add a small random jitter so they don't all fire at the same millisecond.
 const TICK_JITTER = Math.floor(Math.random() * 800); // 0–800 ms
 
-// Compute the deterministic price for any tick index from STARTING_PRICE
+// Tick index is relative to EPOCH_TICK (the tick count at a fixed reference point)
+// so we never have to walk 595 million steps from zero.
+// We pick the reference as the tick index when the app first loads.
+const EPOCH_TICK = Math.floor(Date.now() / TICK_MS);
+
+// Compute deterministic price for a tick index relative to EPOCH_TICK.
+// We only ever walk a small number of steps forward from the last cached position.
 function priceAtTick(tickIdx) {
-  // Walk forward from tick 0. We cache the last known good position so we
-  // don't recompute the whole history every call.
   if (!priceAtTick._cache) {
-    priceAtTick._cache = { idx: 0, price: STARTING_PRICE };
+    priceAtTick._cache = { idx: EPOCH_TICK, price: STARTING_PRICE };
   }
   let { idx, price } = priceAtTick._cache;
   if (tickIdx < idx) {
-    // Rare: reset and walk from start (only happens after a very long session reset)
-    idx = 0; price = STARTING_PRICE;
+    // Clock went backwards somehow — reset to epoch
+    idx = EPOCH_TICK; price = STARTING_PRICE;
   }
+  // Walk forward only the delta (usually 1–5 steps per call)
   for (let i = idx + 1; i <= tickIdx; i++) {
     price = stepPrice(price, i);
   }
