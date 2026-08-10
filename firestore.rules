@@ -4,7 +4,6 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // ---------- users/{uid} ----------
-    // Each trader can only read/write their own profile & balance.
     match /users/{userId} {
       allow read: if request.auth != null && request.auth.uid == userId;
 
@@ -20,9 +19,8 @@ service cloud.firestore {
 
       allow update: if request.auth != null
         && request.auth.uid == userId
-        // only these fields may ever change
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['balance', 'holdings', 'username', 'avatarUrl'])
+             .hasOnly(['balance', 'holdings', 'username', 'avatarUrl', 'costBasis', 'referredBy', 'referralBonuses'])
         && request.resource.data.balance is number
         && request.resource.data.balance >= 0
         && request.resource.data.holdings is number
@@ -32,8 +30,6 @@ service cloud.firestore {
     }
 
     // ---------- market/state ----------
-    // Single shared doc. Any signed-in trader can advance the price
-    // (tick loop) or move it via a trade transaction, never delete it.
     match /market/{docId} {
       allow read: if request.auth != null;
 
@@ -51,8 +47,6 @@ service cloud.firestore {
     }
 
     // ---------- ticks/{tickId} ----------
-    // Deterministic-ID price snapshots used to draw the candlestick chart.
-    // Any signed-in client may write one (harmless overwrite), none may delete.
     match /ticks/{tickId} {
       allow read: if request.auth != null;
       allow create, update: if request.auth != null
@@ -63,8 +57,6 @@ service cloud.firestore {
     }
 
     // ---------- trades/{tradeId} ----------
-    // Public trade tape. A trader may only log a trade under their own
-    // uid, and trades are append-only (immutable history).
     match /trades/{tradeId} {
       allow read: if request.auth != null;
 
@@ -72,9 +64,9 @@ service cloud.firestore {
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.type in ['buy', 'sell']
         && request.resource.data.usdAmount is number
-        && request.resource.data.usdAmount > 0
+        && request.resource.data.usdAmount >= 0
         && request.resource.data.coinAmount is number
-        && request.resource.data.coinAmount > 0
+        && request.resource.data.coinAmount >= 0
         && request.resource.data.price is number
         && request.resource.data.price > 0
         && request.resource.data.username is string;
