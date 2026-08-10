@@ -363,6 +363,46 @@ a{ color:inherit; }
 .wallet-pnl-row .up{ color:var(--toxic); }
 .wallet-pnl-row .down{ color:var(--venom); }
 
+/* quick trade buttons (sheet) */
+.quick-btns{
+  display:flex; gap:6px; margin:0 0 10px;
+  min-height:0; /* collapses when empty */
+}
+.quick-btn{
+  flex:1; padding:9px 4px; border-radius:999px; border:1px solid var(--border);
+  font-size:12px; font-weight:700; cursor:pointer; transition:all .15s;
+  background:var(--surface-3); color:var(--text);
+}
+.quick-btn.qb{ border-color:rgba(124,255,107,.35); color:var(--toxic); }
+.quick-btn.qb:hover{ background:var(--toxic-dim); border-color:var(--toxic); }
+.quick-btn.qs{ border-color:rgba(255,61,110,.35); color:var(--venom); }
+.quick-btn.qs:hover{ background:var(--venom-dim); border-color:var(--venom); }
+
+/* quick trade config (wallet panel) */
+.triggers-title-row{
+  display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;
+}
+.triggers-title-row .triggers-title{ margin-bottom:0; }
+.trigger-edit-btn{
+  font-size:11px; font-weight:600; color:var(--text-dim); background:none;
+  border:1px solid var(--border); border-radius:6px; padding:3px 10px; cursor:pointer;
+}
+.trigger-edit-btn:hover{ color:var(--text); border-color:var(--text-dim); }
+.quick-preview{
+  display:flex; flex-wrap:wrap; gap:5px; min-height:0;
+}
+.quick-preview-chip{
+  font-size:11px; font-weight:600; padding:4px 10px; border-radius:999px; border:1px solid var(--border);
+  color:var(--text-dim);
+}
+.quick-preview-chip.buy{ border-color:rgba(124,255,107,.4); color:var(--toxic); }
+.quick-preview-chip.sell{ border-color:rgba(255,61,110,.4); color:var(--venom); }
+.quick-editor{ margin-top:10px; }
+.quick-editor-cols{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.quick-editor-col{ display:flex; flex-direction:column; gap:6px; }
+.quick-editor-head{ font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-faint); margin-bottom:2px; }
+.quick-cfg-input{ width:100%; box-sizing:border-box; }
+
 /* sparkline */
 .sparkline-wrap{
   margin-bottom:14px;

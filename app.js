@@ -113,6 +113,12 @@ let alertAboveFired = false;
 let alertBelowFired = false;
 let triggersExecuting = false;
 
+// Quick trade buttons config
+const DEFAULT_QUICK_BUYS  = [25, 100, 500];    // USD amounts
+const DEFAULT_QUICK_SELLS = [25, 50, 100];      // % of holdings
+let quickBuys  = [...DEFAULT_QUICK_BUYS];
+let quickSells = [...DEFAULT_QUICK_SELLS];
+
 // ===========================================================
 // AUTH / ONBOARDING
 // ===========================================================
@@ -307,10 +313,19 @@ function subscribeUser(uref) {
   onSnapshot(uref, (snap) => {
     if (!snap.exists()) return;
     currentUser = { uid: uref.id, ...snap.data() };
+    // Load triggers from Firestore (source of truth — works across devices)
+    if (currentUser.stopLoss !== undefined)    stopLossPrice   = currentUser.stopLoss   || null;
+    if (currentUser.takeProfit !== undefined)  takeProfitPrice = currentUser.takeProfit || null;
+    // Load quick trade config from user doc
+    if (Array.isArray(currentUser.quickBuys))  quickBuys  = currentUser.quickBuys;
+    if (Array.isArray(currentUser.quickSells)) quickSells = currentUser.quickSells;
     renderProfile();
     renderWallet();
     renderSheetConvert();
     refreshSheetIfMaxActive();
+    renderTriggerStatus();
+    renderQuickTradePreview();
+    renderQuickBtns();
     checkTriggers();
   });
 }
@@ -334,6 +349,7 @@ function boot() {
   setupReferral();
   setupTriggerUI();
   setupAlertUI();
+  setupQuickTradeUI();
 }
 
 // ===========================================================
@@ -1492,6 +1508,9 @@ function openSheet(mode) {
     applyMaxAmount(mode);
   }
 
+  // Render quick buttons for the current mode
+  renderQuickBtns();
+
   renderSheetAmount();
   renderSheetConvert();
   el("sheetBackdrop").classList.remove("hidden");
@@ -1679,9 +1698,104 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
 }
 
 // ===========================================================
+// QUICK TRADE BUTTONS
+// ===========================================================
+const DEFAULT_QB_LABELS = (v) => `$${v}`;
+const DEFAULT_QS_LABELS = (v) => `${v}%`;
+
+function renderQuickBtns() {
+  const container = el("quickBtns");
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (sheetMode === "buy") {
+    quickBuys.filter(v => v > 0).forEach(amt => {
+      const b = document.createElement("button");
+      b.className = "quick-btn qb";
+      b.textContent = `$${amt}`;
+      b.addEventListener("click", () => {
+        sheetSellAll = false;
+        sheetAmount = String(amt);
+        renderSheetAmount();
+        renderSheetConvert();
+      });
+      container.appendChild(b);
+    });
+  } else {
+    quickSells.filter(v => v > 0).forEach(pct => {
+      const b = document.createElement("button");
+      b.className = "quick-btn qs";
+      b.textContent = `${pct}%`;
+      b.addEventListener("click", () => {
+        const price = marketState.price || STARTING_PRICE;
+        const holdings = currentUser?.holdings || 0;
+        const usdVal = holdings * price;
+        sheetSellAll = pct === 100;
+        sheetAmount = String(Math.floor((usdVal * pct / 100) * 100) / 100);
+        renderSheetAmount();
+        renderSheetConvert();
+      });
+      container.appendChild(b);
+    });
+  }
+}
+
+function renderQuickTradePreview() {
+  const preview = el("quickPreview");
+  if (!preview) return;
+  const buyChips = quickBuys.filter(v => v > 0)
+    .map(v => `<span class="quick-preview-chip buy">$${v}</span>`).join("");
+  const sellChips = quickSells.filter(v => v > 0)
+    .map(v => `<span class="quick-preview-chip sell">${v}%</span>`).join("");
+  preview.innerHTML = buyChips + sellChips ||
+    `<span style="color:var(--text-faint);font-size:11px">No quick buttons set</span>`;
+}
+
+function saveQuickTrade() {
+  if (!currentUser) return;
+  updateDoc(doc(usersCol, currentUser.uid), { quickBuys, quickSells }).catch(() => {});
+}
+
+function setupQuickTradeUI() {
+  renderQuickTradePreview();
+
+  el("quickEditBtn").addEventListener("click", () => {
+    const editor = el("quickEditor");
+    const isOpen = !editor.classList.contains("hidden");
+    editor.classList.toggle("hidden", isOpen);
+    el("quickEditBtn").textContent = isOpen ? "Edit" : "Done";
+    if (!isOpen) {
+      // Populate inputs with current values
+      ["qb0","qb1","qb2"].forEach((id, i) => {
+        el(id).value = quickBuys[i] > 0 ? quickBuys[i] : "";
+      });
+      ["qs0","qs1","qs2"].forEach((id, i) => {
+        el(id).value = quickSells[i] > 0 ? quickSells[i] : "";
+      });
+    }
+  });
+
+  el("quickSaveBtn").addEventListener("click", () => {
+    quickBuys  = ["qb0","qb1","qb2"].map(id => parseFloat(el(id).value) || 0);
+    quickSells = ["qs0","qs1","qs2"].map(id => {
+      const v = parseFloat(el(id).value) || 0;
+      return Math.min(100, Math.max(0, v));
+    });
+    saveQuickTrade();
+    renderQuickTradePreview();
+    renderQuickBtns();
+    el("quickEditor").classList.add("hidden");
+    el("quickEditBtn").textContent = "Edit";
+    toast("Quick buttons saved", false);
+  });
+}
+
+// ===========================================================
 // STOP-LOSS / TAKE-PROFIT
 // ===========================================================
 function loadTriggers() {
+  // Read localStorage for instant render before Firestore snapshot arrives.
+  // subscribeUser() will overwrite with the authoritative Firestore values.
   const saved = localStorage.getItem("plty_triggers");
   if (saved) {
     try {
@@ -1694,7 +1808,14 @@ function loadTriggers() {
 }
 
 function saveTriggers() {
+  // Persist to Firestore so triggers survive page reloads and work across devices.
+  // localStorage is kept as a fast-read fallback for initial render before snapshot arrives.
   localStorage.setItem("plty_triggers", JSON.stringify({ sl: stopLossPrice, tp: takeProfitPrice }));
+  if (!currentUser) return;
+  updateDoc(doc(usersCol, currentUser.uid), {
+    stopLoss:   stopLossPrice   || null,
+    takeProfit: takeProfitPrice || null
+  }).catch(() => {});
 }
 
 function setupTriggerUI() {
@@ -1755,6 +1876,10 @@ async function checkTriggers() {
 
   if (!shouldSell) return;
 
+  // Snapshot trigger prices for restoration if the trade fails.
+  const _triggerSlBackup = stopLossPrice;
+  const _triggerTpBackup = takeProfitPrice;
+
   // Set flag SYNCHRONOUSLY before any await so concurrent snapshot callbacks
   // can't slip through and trigger a second sell while the first is in-flight.
   triggersExecuting = true;
@@ -1768,8 +1893,13 @@ async function checkTriggers() {
     await executeTrade("sell", 0, true, "", true); // sellAll=true, amount ignored
     toast(`🤖 ${reason} — sold all PLTY`, false);
   } catch (e) {
-    toast("Trigger failed: " + e.message, true);
-    // On failure, re-enable so user can retry manually
+    // Restore triggers so the user doesn't silently lose them on a failed execution
+    stopLossPrice   = _triggerSlBackup;
+    takeProfitPrice = _triggerTpBackup;
+    saveTriggers();
+    renderTriggerStatus();
+    drawChart();
+    toast("Trigger failed: " + e.message + " — triggers restored", true);
   } finally {
     triggersExecuting = false;
   }

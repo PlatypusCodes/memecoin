@@ -241,6 +241,32 @@
           <canvas id="sparkCanvas" height="60"></canvas>
         </div>
 
+        <!-- Quick trade settings -->
+        <div class="triggers-section" id="quickTradeSection">
+          <div class="triggers-title-row">
+            <span class="triggers-title">Quick trade buttons</span>
+            <button class="trigger-edit-btn" id="quickEditBtn">Edit</button>
+          </div>
+          <div class="quick-preview" id="quickPreview"></div>
+          <div class="quick-editor hidden" id="quickEditor">
+            <div class="quick-editor-cols">
+              <div class="quick-editor-col">
+                <div class="quick-editor-head">Buy amounts ($)</div>
+                <input class="trigger-input quick-cfg-input" id="qb0" type="number" min="1" step="1" placeholder="e.g. 25" />
+                <input class="trigger-input quick-cfg-input" id="qb1" type="number" min="1" step="1" placeholder="e.g. 100" />
+                <input class="trigger-input quick-cfg-input" id="qb2" type="number" min="1" step="1" placeholder="e.g. 500" />
+              </div>
+              <div class="quick-editor-col">
+                <div class="quick-editor-head">Sell amounts (%)</div>
+                <input class="trigger-input quick-cfg-input" id="qs0" type="number" min="1" max="100" step="1" placeholder="e.g. 25" />
+                <input class="trigger-input quick-cfg-input" id="qs1" type="number" min="1" max="100" step="1" placeholder="e.g. 50" />
+                <input class="trigger-input quick-cfg-input" id="qs2" type="number" min="1" max="100" step="1" placeholder="e.g. 100" />
+              </div>
+            </div>
+            <button class="btn btn-primary btn-block" id="quickSaveBtn" style="margin-top:10px">Save</button>
+          </div>
+        </div>
+
         <!-- Stop-loss / take-profit -->
         <div class="triggers-section">
           <div class="triggers-title">Auto triggers</div>
@@ -316,6 +342,9 @@
     <div class="calling-it-wrap">
       <input id="callingItInput" type="text" maxlength="60" placeholder='Optional: "buying the dip 🤙" (shown in feed)' class="calling-it-input" autocomplete="off" />
     </div>
+
+    <!-- Quick trade buttons (user-configured) -->
+    <div class="quick-btns" id="quickBtns"></div>
 
     <div class="sheet-presets" id="sheetPresets">
       <button class="chip" data-amt="10">$10</button>
