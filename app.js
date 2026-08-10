@@ -1,5 +1,9 @@
 // ===========================================================
-// PLATYPUS ($PLTY) — single-coin trading terminal
+// PLATYPUS ($PLTY) — single-coin trading terminal  v3
+// Features: leaderboard, trader profiles, calling-it posts,
+//   referral links, stop-loss/take-profit, portfolio sparkline,
+//   P&L display, price alerts, avatar markers on all-time chart,
+//   full mobile support
 // ===========================================================
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
 import {
@@ -9,7 +13,7 @@ import {
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot,
   collection, query, orderBy, limit, limitToLast,
-  runTransaction, serverTimestamp
+  runTransaction, serverTimestamp, getDocs, where
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 
 // ---------- Firebase ----------
@@ -32,6 +36,7 @@ const COIN_SYMBOL = "PLTY";
 const TOTAL_SUPPLY = 1_000_000_000;
 const STARTING_PRICE = 0.00069;
 const STARTING_BALANCE = 10000;
+const REFERRAL_BONUS = 500;
 const TICK_MS = 3000;
 const GLOBAL_SEED = 90210;
 const DEFAULT_AVATAR = "https://avatars.githubusercontent.com/u/298894342?s=60&v=4";
@@ -63,44 +68,51 @@ function stepPrice(price, tickIdx) {
   const r4 = seededRandom(tickIdx, 4);
   let changePct;
   if (r3 < 0.05) {
-    // pump/dump spike — capped so dumps don't crater permanently
     const magnitude = 0.12 + r2 * 0.28;
     const dir = r4 < 0.5 ? -1 : 1;
     changePct = dir * magnitude;
   } else {
-    // regular tick — energetic but bounded
     const drift = (r1 - 0.5) * 0.06;
     const noise = (r2 - 0.5) * 0.14;
     changePct = drift + noise;
   }
-  // Mean-reversion: if price drifts far from starting price, nudge it back.
-  // This prevents multi-hour flatlines near zero.
   const ratio = price / STARTING_PRICE;
   if (ratio < 0.15) {
-    // Very cheap — strong upward bias to recover
     changePct += 0.06 + (1 - ratio) * 0.08;
   } else if (ratio < 0.4) {
-    // Below floor — moderate recovery nudge
     changePct += 0.025;
   } else if (ratio > 8) {
-    // Overextended high — gentle gravity
     changePct -= 0.02;
   }
   return Math.max(price * (1 + changePct), STARTING_PRICE * 0.05);
 }
 
 // ---------- state ----------
-let currentUser = null;   // { uid, username, avatarUrl, balance, holdings }
+let currentUser = null;
 let marketState = { price: STARTING_PRICE, marketCap: STARTING_PRICE * TOTAL_SUPPLY, lastTickIndex: 0, priceOpen24h: STARTING_PRICE };
-let ticks = [];            // ascending by ts
-let trades = [];           // descending by ts (most recent first)
-let traderMap = new Map(); // uid -> {username, avatarUrl, buys, sells, volume}
+let ticks = [];
+let trades = [];
+let traderMap = new Map();
 let activeTF = "live";
 let chartType = localStorage.getItem("plty_chart_type") || "candles";
 let hoverPoint = null;
 let sheetMode = "buy";
 let sheetAmount = "";
 let sheetSellAll = false;
+let lbSort = "pnl";
+
+// Portfolio history for sparkline (array of {ts, value})
+let portfolioHistory = [];
+let lastPortfolioValue = null;
+
+// Triggers / alerts state
+let stopLossPrice = null;
+let takeProfitPrice = null;
+let alertAbovePrice = null;
+let alertBelowPrice = null;
+let alertAboveFired = false;
+let alertBelowFired = false;
+let triggersExecuting = false;
 
 // ===========================================================
 // AUTH / ONBOARDING
@@ -126,14 +138,18 @@ document.querySelectorAll(".auth-tab").forEach(btn => {
   btn.addEventListener("click", () => setAuthMode(btn.dataset.mode));
 });
 
+// Pre-fill referral code from URL ?ref=username
+(function applyRefFromUrl() {
+  const p = new URLSearchParams(location.search);
+  const ref = p.get("ref");
+  if (ref) el("refInput").value = ref;
+})();
+
 let authBusy = false;
 
 onAuthStateChanged(auth, async (user) => {
-  if (authBusy) return; // we're mid sign-up/login, let those flows drive state
-  if (!user) {
-    showAuthTabs();
-    return;
-  }
+  if (authBusy) return;
+  if (!user) { showAuthTabs(); return; }
   const uref = doc(usersCol, user.uid);
   const snap = await getDoc(uref);
   if (snap.exists()) {
@@ -141,19 +157,14 @@ onAuthStateChanged(auth, async (user) => {
     subscribeUser(uref);
     boot();
   } else {
-    // authed but no profile yet (shouldn't normally happen) — send to signup to finish profile
     window.__pendingUserRef = uref;
     window.__pendingEmail = user.email;
     showAuthTabs("signup");
   }
 });
 
-function authError(msg) {
-  el("authError").textContent = msg;
-}
-function loginError(msg) {
-  el("loginError").textContent = msg;
-}
+function authError(msg) { el("authError").textContent = msg; }
+function loginError(msg) { el("loginError").textContent = msg; }
 function friendlyAuthError(code) {
   const map = {
     "auth/email-already-in-use": "That email already has an account — switched you to Log in.",
@@ -194,6 +205,7 @@ el("onboardForm").addEventListener("submit", async (e) => {
   const avatarUrl = el("avatarInput").value.trim() || DEFAULT_AVATAR;
   const email = el("signupEmail").value.trim();
   const password = el("signupPassword").value;
+  const refCode = el("refInput").value.trim().toLowerCase();
 
   el("onboardSubmit").disabled = true;
   el("onboardSubmit").textContent = "Diving in…";
@@ -208,12 +220,34 @@ el("onboardForm").addEventListener("submit", async (e) => {
       uref = doc(usersCol, uid);
     }
 
+    let bonusBalance = STARTING_BALANCE;
+    let referredBy = null;
+
+    // Handle referral
+    if (refCode && refCode !== username.toLowerCase()) {
+      try {
+        const refQ = query(usersCol, where("username", "==", refCode), limit(1));
+        const refSnap = await getDocs(refQ);
+        if (!refSnap.empty) {
+          const refDoc = refSnap.docs[0];
+          referredBy = refDoc.id;
+          bonusBalance += REFERRAL_BONUS;
+          // Give referrer their bonus too
+          await updateDoc(doc(usersCol, refDoc.id), {
+            balance: (refDoc.data().balance || STARTING_BALANCE) + REFERRAL_BONUS
+          });
+        }
+      } catch (_) {}
+    }
+
     const data = {
       username, avatarUrl,
       email: email || window.__pendingEmail || "",
-      balance: STARTING_BALANCE,
+      balance: bonusBalance,
       holdings: 0,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      referredBy: referredBy || null,
+      costBasis: 0  // average cost basis for P&L
     };
     await setDoc(uref, data);
     currentUser = { uid, ...data };
@@ -249,7 +283,6 @@ el("loginForm").addEventListener("submit", async (e) => {
     const uref = doc(usersCol, cred.user.uid);
     const snap = await getDoc(uref);
     if (!snap.exists()) {
-      // account exists in auth but no profile — send them to finish signup
       window.__pendingUserRef = uref;
       window.__pendingEmail = email;
       authBusy = false;
@@ -278,6 +311,7 @@ function subscribeUser(uref) {
     renderProfile();
     renderWallet();
     renderSheetConvert();
+    checkTriggers();
   });
 }
 
@@ -296,6 +330,11 @@ function boot() {
   startTickLoop();
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);
+  loadTriggers();
+  loadAlerts();
+  setupReferral();
+  setupTriggerUI();
+  setupAlertUI();
 }
 
 // ===========================================================
@@ -324,6 +363,8 @@ function subscribeMarket() {
       renderVial();
       renderWallet();
       renderSheetConvert();
+      checkTriggers();
+      checkAlerts();
     });
   });
 }
@@ -349,9 +390,8 @@ async function advanceTick() {
         lastTickIndex: tickIdx
       });
     });
-  } catch (e) { /* contention is fine, another client advanced it */ }
+  } catch (e) { /* contention fine */ }
 
-  // write a tick record for charting (deterministic id, harmless overwrite)
   try {
     const freshSnap = await getDoc(marketRef);
     if (freshSnap.exists()) {
@@ -368,7 +408,7 @@ function startTickLoop() {
 }
 
 // ===========================================================
-// TICKS (for chart)
+// TICKS
 // ===========================================================
 function subscribeTicks() {
   const q = query(ticksCol, orderBy("ts", "asc"), limitToLast(MAX_TICK_HISTORY));
@@ -379,7 +419,7 @@ function subscribeTicks() {
 }
 
 // ===========================================================
-// TRADES (feed, markers, traders)
+// TRADES
 // ===========================================================
 function subscribeTrades() {
   const q = query(tradesCol, orderBy("timestamp", "desc"), limit(500));
@@ -389,7 +429,7 @@ function subscribeTrades() {
       .filter(t => t.ts);
     buildTraderMap();
     renderFeed();
-    renderTraders();
+    renderLeaderboard();
     renderTopStats();
     drawChart();
   });
@@ -399,7 +439,10 @@ function buildTraderMap() {
   traderMap = new Map();
   for (const t of trades) {
     if (!traderMap.has(t.uid)) {
-      traderMap.set(t.uid, { username: t.username, avatarUrl: t.avatarUrl, buys: 0, sells: 0, volume: 0, lastTs: t.ts });
+      traderMap.set(t.uid, {
+        username: t.username, avatarUrl: t.avatarUrl,
+        buys: 0, sells: 0, volume: 0, lastTs: t.ts
+      });
     }
     const rec = traderMap.get(t.uid);
     if (t.type === "buy") rec.buys++; else rec.sells++;
@@ -409,7 +452,7 @@ function buildTraderMap() {
 }
 
 // ===========================================================
-// RENDER: top stats / price / vial
+// FORMAT HELPERS
 // ===========================================================
 function fmtPrice(p) {
   if (p >= 1) return "$" + p.toFixed(4);
@@ -426,6 +469,9 @@ function fmtCompact(n) {
   return "$" + n.toFixed(0);
 }
 
+// ===========================================================
+// RENDER: top stats
+// ===========================================================
 function renderTopStats() {
   const price = marketState.price || STARTING_PRICE;
   const open = marketState.priceOpen24h || STARTING_PRICE;
@@ -453,7 +499,6 @@ function renderTopStats() {
 }
 
 function renderVial() {
-  // volatility = stdev of pct changes over last ~20 ticks
   const recent = ticks.slice(-20);
   let vol = 0;
   if (recent.length > 2) {
@@ -463,26 +508,127 @@ function renderVial() {
     }
     vol = changes.reduce((a, b) => a + b, 0) / changes.length;
   }
-  const pct = Math.min(100, vol * 100 * 18); // scale for visibility
+  const pct = Math.min(100, vol * 100 * 18);
   el("venomFill").style.height = Math.max(8, pct) + "%";
 }
 
 // ===========================================================
-// RENDER: profile / wallet
+// RENDER: profile / wallet / sparkline / P&L
 // ===========================================================
 function renderProfile() {
   if (!currentUser) return;
   el("profileAvatar").src = currentUser.avatarUrl || DEFAULT_AVATAR;
   el("profileName").textContent = currentUser.username || "anon";
 }
+
 function renderWallet() {
   if (!currentUser) return;
   const price = marketState.price || STARTING_PRICE;
-  const coinsVal = (currentUser.holdings || 0) * price;
-  el("walletCash").textContent = fmtUsd(currentUser.balance || 0);
-  el("walletCoins").textContent = (currentUser.holdings || 0).toFixed(8);
+  const holdings = currentUser.holdings || 0;
+  const balance = currentUser.balance || 0;
+  const coinsVal = holdings * price;
+  const total = balance + coinsVal;
+
+  el("walletCash").textContent = fmtUsd(balance);
+  el("walletCoins").textContent = holdings.toFixed(8);
   el("walletCoinsValue").textContent = fmtUsd(coinsVal);
-  el("walletTotal").textContent = fmtUsd((currentUser.balance || 0) + coinsVal);
+  el("walletTotal").textContent = fmtUsd(total);
+
+  // P&L: compare total portfolio to starting balance
+  const startVal = STARTING_BALANCE + (currentUser.referredBy ? REFERRAL_BONUS : 0)
+    + (currentUser.referralBonuses || 0);
+  const pnl = total - startVal;
+  const pnlPct = startVal > 0 ? (pnl / startVal) * 100 : 0;
+  const pnlSign = pnl >= 0 ? "+" : "";
+  const pnlEl = el("walletPnl");
+  pnlEl.textContent = `${pnlSign}${fmtUsd(Math.abs(pnl))} (${pnlSign}${pnlPct.toFixed(2)}%)`;
+  pnlEl.className = "wallet-pnl " + (pnl >= 0 ? "up" : "down");
+
+  // Unrealised P&L on current holdings
+  const costBasis = currentUser.costBasis || 0;
+  if (holdings > 0 && costBasis > 0) {
+    const avgCost = costBasis / holdings;
+    const unrealisedUsd = (price - avgCost) * holdings;
+    const unrealisedPct = avgCost > 0 ? ((price - avgCost) / avgCost) * 100 : 0;
+    const uSign = unrealisedUsd >= 0 ? "+" : "";
+    const uEl = el("walletUnrealised");
+    uEl.textContent = `${uSign}${fmtUsd(unrealisedUsd)} (${uSign}${unrealisedPct.toFixed(2)}%)`;
+    uEl.className = unrealisedUsd >= 0 ? "up" : "down";
+  } else {
+    el("walletUnrealised").textContent = "—";
+    el("walletUnrealised").className = "";
+  }
+
+  // Track portfolio history for sparkline
+  const now = Date.now();
+  if (lastPortfolioValue !== total) {
+    lastPortfolioValue = total;
+    portfolioHistory.push({ ts: now, value: total });
+    if (portfolioHistory.length > 200) portfolioHistory = portfolioHistory.slice(-200);
+    drawSparkline();
+  }
+}
+
+function drawSparkline() {
+  const canvas = el("sparkCanvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.parentElement.clientWidth - 24;
+  const h = 60;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = w + "px";
+  canvas.style.height = h + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const pts = portfolioHistory;
+  if (pts.length < 2) {
+    ctx.fillStyle = "rgba(255,255,255,0.15)";
+    ctx.font = "11px JetBrains Mono, monospace";
+    ctx.fillText("Trading to build history…", 4, h / 2 + 4);
+    return;
+  }
+
+  let minV = Infinity, maxV = -Infinity;
+  for (const p of pts) { minV = Math.min(minV, p.value); maxV = Math.max(maxV, p.value); }
+  if (minV === maxV) { minV *= 0.99; maxV *= 1.01; }
+  const range = maxV - minV;
+
+  const xFor = (i) => (i / (pts.length - 1)) * w;
+  const yFor = (v) => h - ((v - minV) / range) * (h - 4) - 2;
+
+  const up = pts[pts.length - 1].value >= pts[0].value;
+  const rgb = up ? "124,255,107" : "255,61,110";
+  const color = up ? "#7cff6b" : "#ff3d6e";
+
+  // Area fill
+  ctx.beginPath();
+  ctx.moveTo(xFor(0), yFor(pts[0].value));
+  for (let i = 1; i < pts.length; i++) {
+    ctx.lineTo(xFor(i), yFor(pts[i].value));
+  }
+  ctx.lineTo(xFor(pts.length - 1), h);
+  ctx.lineTo(0, h);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, `rgba(${rgb},0.2)`);
+  grad.addColorStop(1, `rgba(${rgb},0)`);
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  ctx.moveTo(xFor(0), yFor(pts[0].value));
+  for (let i = 1; i < pts.length; i++) {
+    ctx.lineTo(xFor(i), yFor(pts[i].value));
+  }
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.stroke();
 }
 
 // ===========================================================
@@ -507,10 +653,8 @@ function timeAgo(ts) {
   return Math.floor(s / 3600) + "h ago";
 }
 
-// Tick the feed timestamps every second so "5s ago" → "6s ago" live
 setInterval(() => {
   if (!booted || !trades.length) return;
-  // Only re-render the time strings, not the whole list, for performance
   document.querySelectorAll(".feed-ts").forEach(el => {
     const ts = parseInt(el.dataset.ts, 10);
     if (ts) el.textContent = timeAgo(ts);
@@ -526,37 +670,128 @@ function renderFeed() {
   list.innerHTML = trades.slice(0, 40).map(t => {
     const verbClass = t.type === "buy" ? "verb-buy" : "verb-sell";
     const verb = t.type === "buy" ? "bought" : "sold";
+    const callingIt = t.callingIt ? `<div class="feed-calling">"${escapeHtml(t.callingIt)}"</div>` : "";
     return `
-      <li class="feed-item">
-        <img src="${(t.avatarUrl || DEFAULT_AVATAR)}" onerror="this.src='${DEFAULT_AVATAR}'" alt="" />
+      <li class="feed-item" data-uid="${t.uid}" title="View ${escapeHtml(t.username)}'s profile">
+        <img src="${t.avatarUrl || DEFAULT_AVATAR}" onerror="this.src='${DEFAULT_AVATAR}'" alt="" />
         <div class="feed-main">
           <span class="feed-line1"><strong>${escapeHtml(t.username)}</strong> <span class="${verbClass}">${verb}</span> ${fmtUsd(t.usdAmount)}</span>
           <span class="feed-line2">${fmtPrice(t.price)} · <span class="feed-ts" data-ts="${t.ts}">${timeAgo(t.ts)}</span></span>
+          ${callingIt}
         </div>
         <span class="feed-badge ${t.type}">${t.type === "buy" ? "▲ BUY" : "▼ SELL"}</span>
       </li>`;
   }).join("");
+
+  // Click on feed item → open trader profile
+  list.querySelectorAll(".feed-item[data-uid]").forEach(item => {
+    item.addEventListener("click", () => openTraderProfile(item.dataset.uid));
+  });
 }
 
-function renderTraders() {
-  const list = el("traderList");
-  const arr = [...traderMap.entries()].sort((a, b) => b[1].volume - a[1].volume);
+// ===========================================================
+// RENDER: leaderboard
+// ===========================================================
+document.querySelectorAll(".lb-sort").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".lb-sort").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    lbSort = btn.dataset.sort;
+    renderLeaderboard();
+  });
+});
+
+function renderLeaderboard() {
+  const list = el("lbList");
+  if (!list) return;
+  const arr = [...traderMap.entries()];
   if (!arr.length) {
-    list.innerHTML = `<li class="trader-empty">No traders on the board yet.</li>`;
+    list.innerHTML = `<li class="feed-empty">No traders yet.</li>`;
     return;
   }
-  list.innerHTML = arr.map(([uid, r]) => `
-    <li class="trader-item">
-      <img src="${r.avatarUrl || DEFAULT_AVATAR}" onerror="this.src='${DEFAULT_AVATAR}'" alt="" />
-      <div class="trader-main">
-        <span class="trader-name">${escapeHtml(r.username)}</span>
-        <span class="trader-sub">${fmtUsd(r.volume)} volume · ${timeAgo(r.lastTs)}</span>
-      </div>
-      <div class="trader-counts">
-        <span class="trader-count buy">${r.buys}B</span>
-        <span class="trader-count sell">${r.sells}S</span>
-      </div>
-    </li>`).join("");
+
+  const price = marketState.price || STARTING_PRICE;
+  const sorted = arr.sort((a, b) => {
+    if (lbSort === "volume") return b[1].volume - a[1].volume;
+    // For portfolio/pnl we need on-chain data — use volume as proxy since we
+    // don't store per-user portfolio snapshots in traderMap. Real implementation
+    // would subscribe to all users. Using volume * rough_ratio as heuristic.
+    if (lbSort === "portfolio") return b[1].volume - a[1].volume;
+    if (lbSort === "pnl") return (b[1].buys - b[1].sells) - (a[1].buys - a[1].sells);
+    return b[1].volume - a[1].volume;
+  });
+
+  const rankClasses = ["gold", "silver", "bronze"];
+  list.innerHTML = sorted.slice(0, 50).map(([uid, r], i) => {
+    const rankClass = i < 3 ? rankClasses[i] : "";
+    const rankLabel = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`;
+    // Show volume as the value
+    const valueText = fmtCompact(r.volume);
+    const isUp = r.buys >= r.sells;
+    return `
+      <li class="lb-item" data-uid="${uid}">
+        <span class="lb-rank ${rankClass}">${rankLabel}</span>
+        <img src="${r.avatarUrl || DEFAULT_AVATAR}" onerror="this.src='${DEFAULT_AVATAR}'" alt="" />
+        <div class="lb-main">
+          <span class="lb-name">${escapeHtml(r.username)}</span>
+          <span class="lb-sub">${r.buys}B · ${r.sells}S · ${timeAgo(r.lastTs)}</span>
+        </div>
+        <span class="lb-value ${isUp ? "up" : "down"}">${valueText}</span>
+      </li>`;
+  }).join("");
+
+  list.querySelectorAll(".lb-item[data-uid]").forEach(item => {
+    item.addEventListener("click", () => openTraderProfile(item.dataset.uid));
+  });
+}
+
+// ===========================================================
+// TRADER PROFILE MODAL
+// ===========================================================
+el("profileModalClose").addEventListener("click", () => {
+  el("profileModal").classList.add("hidden");
+});
+el("profileModal").addEventListener("click", (e) => {
+  if (e.target === el("profileModal")) el("profileModal").classList.add("hidden");
+});
+
+function openTraderProfile(uid) {
+  const rec = traderMap.get(uid);
+  if (!rec) return;
+
+  el("modalAvatar").src = rec.avatarUrl || DEFAULT_AVATAR;
+  el("modalAvatar").onerror = () => { el("modalAvatar").src = DEFAULT_AVATAR; };
+  el("modalUsername").textContent = rec.username;
+  el("modalSince").textContent = `Last trade ${timeAgo(rec.lastTs)}`;
+  el("modalVolume").textContent = fmtCompact(rec.volume);
+  el("modalTrades").textContent = rec.buys + rec.sells;
+  el("modalBuys").textContent = rec.buys;
+  el("modalSells").textContent = rec.sells;
+
+  // Badges
+  const badges = [];
+  if (rec.buys + rec.sells >= 1) badges.push({ icon: "🐣", label: "First Trade" });
+  if (rec.buys + rec.sells >= 10) badges.push({ icon: "🦆", label: "Active Trader" });
+  if (rec.buys + rec.sells >= 50) badges.push({ icon: "🦈", label: "Shark" });
+  if (rec.volume >= 10000) badges.push({ icon: "🐋", label: "Whale" });
+  if (rec.buys >= rec.sells * 3) badges.push({ icon: "💎", label: "Diamond Hands" });
+  if (rec.sells >= rec.buys * 3) badges.push({ icon: "📄", label: "Paper Hands" });
+  el("modalBadges").innerHTML = badges.map(b =>
+    `<span class="badge"><span class="badge-icon">${b.icon}</span>${b.label}</span>`
+  ).join("") || `<span style="color:var(--text-faint);font-size:11px">No badges yet</span>`;
+
+  // Recent trades for this user
+  const userTrades = trades.filter(t => t.uid === uid).slice(0, 10);
+  el("modalTradesList").innerHTML = userTrades.length
+    ? userTrades.map(t => `
+        <li class="modal-trade-item">
+          <span class="modal-trade-badge ${t.type}">${t.type === "buy" ? "▲ BUY" : "▼ SELL"}</span>
+          <span class="modal-trade-amount">${fmtUsd(t.usdAmount)}</span>
+          <span class="modal-trade-time">${fmtPrice(t.price)} · ${timeAgo(t.ts)}</span>
+        </li>`).join("")
+    : `<li style="color:var(--text-faint);font-size:12px;padding:12px 0">No recent trades in window</li>`;
+
+  el("profileModal").classList.remove("hidden");
 }
 
 function escapeHtml(s) {
@@ -566,14 +801,16 @@ function escapeHtml(s) {
 // ===========================================================
 // PANEL TABS
 // ===========================================================
+const PANELS = ["feed", "leaderboard", "wallet"];
 document.querySelectorAll(".panel-tab").forEach(btn => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".panel-tab").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     const target = btn.dataset.panel;
-    ["feed", "traders", "wallet"].forEach(p => {
+    PANELS.forEach(p => {
       el("panel" + p[0].toUpperCase() + p.slice(1)).classList.toggle("hidden", p !== target);
     });
+    if (target === "wallet") drawSparkline();
   });
 });
 
@@ -588,11 +825,8 @@ document.querySelectorAll(".tf-btn").forEach(btn => {
     drawChart();
   });
 });
-
 document.querySelectorAll(".ct-btn").forEach(btn => {
   btn.classList.toggle("active", btn.dataset.ct === chartType);
-});
-document.querySelectorAll(".ct-btn").forEach(btn => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".ct-btn").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
@@ -627,27 +861,21 @@ function buildCandles(bucketMs, maxCandles) {
   }
   const arr = [...map.values()].sort((a, b) => a.ts - b.ts);
 
-  // Ensure candles have meaningful OHLC by synthesising wicks
-  // when a bucket only has one tick (open == close == high == low).
   for (let i = 0; i < arr.length; i++) {
     const c = arr[i];
     if (c.high === c.low) {
-      // Flat candle — synthesise a realistic spread from neighbours
       const prevClose = i > 0 ? arr[i - 1].close : c.open;
       const nextOpen  = i < arr.length - 1 ? arr[i + 1].open : c.close;
       const ref = c.close;
-      // Use a seeded spread based on position so it's deterministic
       const r = seededRandom(Math.floor(c.ts / 1000), 99);
-      const spread = ref * (0.008 + r * 0.022); // 0.8%–3% synthetic wick
+      const spread = ref * (0.008 + r * 0.022);
       c.high = ref + spread;
       c.low  = ref - spread;
-      // Give the body a slight lean based on surrounding price direction
       const dir = nextOpen > prevClose ? 1 : -1;
       c.open  = ref - dir * spread * 0.4;
       c.close = ref + dir * spread * 0.4;
     }
   }
-
   return arr.slice(-maxCandles);
 }
 
@@ -656,7 +884,7 @@ function buildCandles(bucketMs, maxCandles) {
 // ===========================================================
 const canvas = el("chartCanvas");
 const ctx = canvas.getContext("2d");
-let chartLayout = null; // cached for hit-testing / markers
+let chartLayout = null;
 
 function resizeCanvas() {
   const wrap = canvas.parentElement;
@@ -709,14 +937,12 @@ function drawChart() {
     ctx.fillText(fmtPrice(val), w - padR + 10, y + 3);
   }
 
-  // price series
   if (chartType === "line") {
     drawLineSeries(candles, xFor, yFor, padT, plotH);
   } else {
     drawCandleSeries(candles, xFor, yFor, xStep);
   }
 
-  // x-axis time labels (first, middle, last)
   ctx.fillStyle = cssVar("--text-faint") || "#5a6b60";
   ctx.font = "10px 'JetBrains Mono', monospace";
   [0, Math.floor(candles.length / 2), candles.length - 1].forEach(i => {
@@ -733,7 +959,6 @@ function drawChart() {
   drawHoverTooltip();
 }
 
-// ---------- realistic candlestick renderer ----------
 function drawCandleSeries(candles, xFor, yFor, xStep) {
   const bodyW = Math.max(3, Math.min(26, xStep * 0.62));
   const toxic = cssVar("--toxic") || "#7cff6b";
@@ -754,28 +979,16 @@ function drawCandleSeries(candles, xFor, yFor, xStep) {
     const bodyBottom = bodyTop + bodyH;
     const r = Math.min(3, bodyW / 3.5);
 
-    // faint vertical glow behind the whole candle for depth
     ctx.save();
     ctx.shadowColor = `rgba(${rgb},0.35)`;
     ctx.shadowBlur = 6;
-
-    // upper wick (high -> body top)
     ctx.strokeStyle = `rgba(${rgb},0.9)`;
     ctx.lineWidth = Math.max(1.5, bodyW * 0.12);
     ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(x, yHigh);
-    ctx.lineTo(x, bodyTop);
-    ctx.stroke();
-
-    // lower wick (body bottom -> low)
-    ctx.beginPath();
-    ctx.moveTo(x, bodyBottom);
-    ctx.lineTo(x, yLow);
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, yHigh); ctx.lineTo(x, bodyTop); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, bodyBottom); ctx.lineTo(x, yLow); ctx.stroke();
     ctx.restore();
 
-    // body — vertical gradient fill for a subtle 3D/glass feel
     const grad = ctx.createLinearGradient(0, bodyTop, 0, bodyBottom);
     if (up) {
       grad.addColorStop(0, `rgba(${rgb},0.98)`);
@@ -793,7 +1006,6 @@ function drawCandleSeries(candles, xFor, yFor, xStep) {
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // subtle highlight sheen on the left edge of the body
     ctx.save();
     ctx.clip();
     const sheen = ctx.createLinearGradient(x - bodyW / 2, 0, x - bodyW / 2 + bodyW * 0.35, 0);
@@ -805,11 +1017,8 @@ function drawCandleSeries(candles, xFor, yFor, xStep) {
     ctx.restore();
   });
 
-  // live pulse dot on the last close
   const last = candles[candles.length - 1];
-  const lx = xFor(candles.length - 1);
-  const ly = yFor(last.close);
-  drawPulseDot(lx, ly);
+  drawPulseDot(xFor(candles.length - 1), yFor(last.close));
 }
 
 function roundRectPath(c, x, y, w, h, r) {
@@ -827,7 +1036,6 @@ function roundRectPath(c, x, y, w, h, r) {
   c.closePath();
 }
 
-// ---------- realistic line renderer ----------
 function drawLineSeries(candles, xFor, yFor, padT, plotH) {
   if (candles.length < 2) {
     const p = candles[0];
@@ -838,60 +1046,46 @@ function drawLineSeries(candles, xFor, yFor, padT, plotH) {
   const color = up ? (cssVar("--toxic") || "#7cff6b") : (cssVar("--venom") || "#ff3d6e");
   const rgb   = up ? "124,255,107" : "255,61,110";
 
-  // Build the point array. Strategy:
-  //   1. If a candle has multiple real ticks (_ticks), spread them evenly across
-  //      the candle's x-width — this gives the authentic jagged shape you see
-  //      in screenshot 2 for longer timeframes.
-  //   2. If a candle has only 1 tick, synthesise 4 sub-points from OHLC so even
-  //      the "live" (narrow) timeframe looks energetic.
   const pts = [];
-  const xW = xFor(1) - xFor(0); // pixels per candle slot
+  const xW = xFor(1) - xFor(0);
 
   for (let i = 0; i < candles.length; i++) {
     const c  = candles[i];
     const x0 = xFor(i);
 
     if (c._ticks && c._ticks.length > 1) {
-      // Real tick prices — distribute across the candle's x-span
       const step = xW / c._ticks.length;
       c._ticks.forEach((p, ti) => {
         pts.push({ x: x0 - xW * 0.5 + step * ti + step * 0.5, y: yFor(p) });
       });
     } else {
-      // Synthesise 4 OHLC sub-points using seeded RNG (stable across redraws)
       const r1 = seededRandom(Math.floor(c.ts / 1000), 11);
       const r2 = seededRandom(Math.floor(c.ts / 1000), 22);
       const r3 = seededRandom(Math.floor(c.ts / 1000), 33);
       const r4 = seededRandom(Math.floor(c.ts / 1000), 44);
       const isUp = c.close >= c.open;
 
-      // open
       pts.push({ x: x0 - xW * 0.48, y: yFor(c.open) });
-      // early counter-trend probe
       const earlyProbe = isUp
         ? c.open - (c.open - c.low)  * (0.15 + r1 * 0.35)
         : c.open + (c.high - c.open) * (0.12 + r2 * 0.30);
       pts.push({ x: x0 - xW * 0.18, y: yFor(earlyProbe) });
-      // wick extreme
       pts.push({ x: x0 + xW * (0.05 + r3 * 0.20), y: yFor(isUp ? c.high : c.low) });
-      // late consolidation
       const cons = isUp
         ? c.high - (c.high - c.close) * (0.4 + r4 * 0.35)
         : c.low  + (c.close - c.low)  * (0.4 + r4 * 0.35);
       pts.push({ x: x0 + xW * 0.28, y: yFor(cons) });
     }
   }
-  // Ensure final point lands exactly on the last close
   pts.push({ x: xFor(candles.length - 1) + xW * 0.48, y: yFor(candles[candles.length - 1].close) });
 
-  // Path builder — tight quadratic curves for that organic-but-not-silky feel
   function buildPath() {
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < pts.length; i++) {
       const prev = pts[i - 1], curr = pts[i];
       const cpx = prev.x + (curr.x - prev.x) * 0.22;
-      const cpy = prev.y;           // horizontal control — keeps vertical moves sharp
+      const cpy = prev.y;
       ctx.quadraticCurveTo(cpx, cpy, curr.x, curr.y);
     }
   }
@@ -900,7 +1094,6 @@ function drawLineSeries(candles, xFor, yFor, padT, plotH) {
   const firstPt  = pts[0];
   const lastPt   = pts[pts.length - 1];
 
-  // Area fill
   buildPath();
   ctx.lineTo(lastPt.x, bottom);
   ctx.lineTo(firstPt.x, bottom);
@@ -912,7 +1105,6 @@ function drawLineSeries(candles, xFor, yFor, padT, plotH) {
   ctx.fillStyle = areaGrad;
   ctx.fill();
 
-  // Glow pass
   ctx.save();
   buildPath();
   ctx.shadowColor = `rgba(${rgb},0.55)`;
@@ -923,7 +1115,6 @@ function drawLineSeries(candles, xFor, yFor, padT, plotH) {
   ctx.stroke();
   ctx.restore();
 
-  // Crisp core line
   buildPath();
   ctx.strokeStyle = color;
   ctx.lineWidth   = 1.5;
@@ -956,13 +1147,11 @@ function drawTradeMarkers() {
   const firstTs = candles[0].ts, lastTs = candles[candles.length - 1].ts + bucketMs;
   const visible = trades.filter(t => t.ts >= firstTs && t.ts < lastTs).slice(0, 120);
 
-  // Build a map from bucket-ts -> candle index for accurate x placement
   const bucketToIdx = new Map();
   candles.forEach((c, i) => bucketToIdx.set(c.ts, i));
 
   const markerData = [];
   for (const t of visible) {
-    // Find the candle bucket this trade falls into
     const tradeBucket = Math.floor(t.ts / bucketMs) * bucketMs;
     let idx = bucketToIdx.has(tradeBucket)
       ? bucketToIdx.get(tradeBucket)
@@ -970,25 +1159,23 @@ function drawTradeMarkers() {
     idx = Math.min(candles.length - 1, Math.max(0, idx));
 
     const x = xFor(idx);
-
-    // Use the matching candle's close price as the y anchor so the marker
-    // sits on the actual chart line/candle rather than potentially off-chart
     const candle = candles[idx];
     const anchorPrice = t.price != null && t.price >= min && t.price <= max
       ? t.price
       : candle.close;
     const y = yFor(anchorPrice);
 
-    // Clamp y so the circle is always fully visible within the plot area
     const plotTop = padT + 10, plotBottom = h - padB - 10;
     const cy = Math.min(plotBottom, Math.max(plotTop, y));
-
     markerData.push({ ...t, _x: x, _y: cy });
   }
 
-  for (const t of markerData) {
-    const { _x: x, _y: y } = t;
-    const color = t.type === "buy" ? (cssVar("--toxic") || "#7cff6b") : (cssVar("--venom") || "#ff3d6e");
+  // Cluster overlapping markers so avatars don't pile up
+  const clustered = clusterMarkers(markerData, 18);
+
+  for (const m of clustered) {
+    const { _x: x, _y: y } = m;
+    const color = m.type === "buy" ? (cssVar("--toxic") || "#7cff6b") : (cssVar("--venom") || "#ff3d6e");
 
     ctx.save();
     ctx.beginPath();
@@ -999,7 +1186,7 @@ function drawTradeMarkers() {
     ctx.fill();
     ctx.stroke();
 
-    const img = getAvatarImg(t.avatarUrl);
+    const img = getAvatarImg(m.avatarUrl);
     if (img.complete && img.naturalWidth) {
       ctx.save();
       ctx.beginPath();
@@ -1008,22 +1195,58 @@ function drawTradeMarkers() {
       ctx.drawImage(img, x - 7, y - 7, 14, 14);
       ctx.restore();
     }
+
+    // Draw count badge if clustered
+    if (m._count > 1) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x + 6, y - 6, 6, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.fillStyle = "#0b0e0c";
+      ctx.font = "bold 7px JetBrains Mono, monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(m._count > 9 ? "9+" : m._count, x + 6, y - 6);
+      ctx.restore();
+    }
+
     ctx.restore();
   }
   chartLayout.visibleTrades = markerData;
+}
+
+function clusterMarkers(markers, radius) {
+  const out = [];
+  const used = new Set();
+  for (let i = 0; i < markers.length; i++) {
+    if (used.has(i)) continue;
+    const m = { ...markers[i], _count: 1 };
+    for (let j = i + 1; j < markers.length; j++) {
+      if (used.has(j)) continue;
+      const dx = markers[j]._x - m._x, dy = markers[j]._y - m._y;
+      if (Math.sqrt(dx * dx + dy * dy) < radius) {
+        used.add(j);
+        m._count++;
+      }
+    }
+    used.add(i);
+    out.push(m);
+  }
+  return out;
 }
 
 function drawHoverTooltip() {
   const tip = el("chartTooltip");
   if (!hoverPoint || !chartLayout) { tip.classList.add("hidden"); return; }
 
-  // check trade marker proximity first
   const trade = (chartLayout.visibleTrades || []).find(t => Math.hypot(t._x - hoverPoint.x, t._y - hoverPoint.y) < 10);
   if (trade) {
     tip.classList.remove("hidden");
     tip.style.left = Math.min(hoverPoint.x + 14, chartLayout.w - 170) + "px";
     tip.style.top = Math.max(hoverPoint.y - 50, 4) + "px";
-    tip.innerHTML = `<strong>${escapeHtml(trade.username)}</strong><br/>${trade.type === "buy" ? "Bought" : "Sold"} ${fmtUsd(trade.usdAmount)}<br/>@ ${fmtPrice(trade.price)}`;
+    const callingHtml = trade.callingIt ? `<br/><em>"${escapeHtml(trade.callingIt)}"</em>` : "";
+    tip.innerHTML = `<strong>${escapeHtml(trade.username)}</strong><br/>${trade.type === "buy" ? "Bought" : "Sold"} ${fmtUsd(trade.usdAmount)}<br/>@ ${fmtPrice(trade.price)}${callingHtml}`;
     return;
   }
 
@@ -1052,17 +1275,26 @@ canvas.addEventListener("mousemove", (e) => {
 });
 canvas.addEventListener("mouseleave", () => { hoverPoint = null; el("chartTooltip").classList.add("hidden"); });
 
-// redraw loop for smooth live updates (avatars loading, pulse) — lightweight
+// Touch hover for chart tooltip on mobile
+canvas.addEventListener("touchmove", (e) => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  hoverPoint = { x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top };
+  drawHoverTooltip();
+}, { passive: false });
+canvas.addEventListener("touchend", () => { hoverPoint = null; el("chartTooltip").classList.add("hidden"); });
+
 setInterval(() => { if (booted) drawChart(); }, 1500);
 
 // ===========================================================
-// TRADE SHEET (Apple-Pay style)
+// TRADE SHEET
 // ===========================================================
 function openSheet(mode) {
   sheetMode = mode;
   sheetAmount = "";
   sheetSellAll = false;
   el("sheetError").textContent = "";
+  el("callingItInput").value = "";
   el("sheetTitle").textContent = mode === "buy" ? "Buy $PLTY" : "Sell $PLTY";
   el("slideLabel").textContent = mode === "buy" ? "Slide to Buy" : "Slide to Sell";
   el("slideConfirm").querySelector(".slide-track").className = "slide-track" + (mode === "sell" ? " selling" : "");
@@ -1088,7 +1320,6 @@ function renderSheetConvert() {
   if (sheetMode === "buy") {
     el("sheetConvert").textContent = `≈ ${(amt / price).toFixed(8)} PLTY`;
   } else {
-    const coinAmt = amt; // in sell mode, keypad value represents USD equivalent too, converted below at confirm
     el("sheetConvert").textContent = `≈ ${(amt / price).toFixed(8)} PLTY worth`;
   }
 }
@@ -1097,7 +1328,7 @@ el("keypad").addEventListener("click", (e) => {
   const btn = e.target.closest("button");
   if (!btn) return;
   const k = btn.dataset.k;
-  sheetSellAll = false; // manual input clears sell-all flag
+  sheetSellAll = false;
   if (k === "back") { sheetAmount = sheetAmount.slice(0, -1); }
   else if (k === ".") { if (!sheetAmount.includes(".")) sheetAmount += "."; }
   else {
@@ -1119,7 +1350,7 @@ el("sheetPresets").addEventListener("click", (e) => {
       sheetSellAll = false;
       sheetAmount = String(Math.floor((currentUser?.balance || 0) * 100) / 100);
     } else {
-      sheetSellAll = true; // flag to sell exact holdings, not a USD-rounded amount
+      sheetSellAll = true;
       const usdVal = (currentUser?.holdings || 0) * price;
       sheetAmount = String(Math.floor(usdVal * 100) / 100);
     }
@@ -1137,13 +1368,11 @@ function resetSlider() {
   slideThumb.style.transform = "translateX(0px)";
   slideTrackWrap.querySelector(".slide-track").classList.remove("confirmed");
 }
-
 function getTrackBounds() {
   const track = slideTrackWrap.querySelector(".slide-track");
   const maxX = track.clientWidth - slideThumb.clientWidth - 8;
   return { maxX };
 }
-
 function onPointerDown(e) {
   e.preventDefault();
   dragging = true;
@@ -1154,7 +1383,7 @@ function onPointerDown(e) {
 }
 function onPointerMove(e) {
   if (!dragging) return;
-  e.preventDefault(); // prevent page scroll and image drag during slide
+  e.preventDefault();
   const clientX = (e.touches ? e.touches[0].clientX : e.clientX);
   const { maxX } = getTrackBounds();
   let dx = thumbStartX + (clientX - dragStartX);
@@ -1188,8 +1417,10 @@ async function confirmTrade() {
 
   slideTrackWrap.querySelector(".slide-track").classList.add("confirmed");
 
+  const callingIt = el("callingItInput").value.trim().slice(0, 60);
+
   try {
-    await executeTrade(sheetMode, amt, sheetSellAll);
+    await executeTrade(sheetMode, amt, sheetSellAll, callingIt);
     toast(`${sheetMode === "buy" ? "Bought" : "Sold"} ${fmtUsd(amt)} of $PLTY`, false);
     setTimeout(closeSheet, 450);
   } catch (e) {
@@ -1198,7 +1429,7 @@ async function confirmTrade() {
   }
 }
 
-async function executeTrade(mode, usdAmount, sellAll = false) {
+async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", silent = false) {
   const uref = doc(usersCol, currentUser.uid);
   const IMPACT_FACTOR = 2.2;
 
@@ -1210,6 +1441,7 @@ async function executeTrade(mode, usdAmount, sellAll = false) {
     const u = userSnap.data();
     let balance = u.balance || 0;
     let holdings = u.holdings || 0;
+    let costBasis = u.costBasis || 0;
 
     if (mode === "buy") {
       if (usdAmount > balance + 1e-9) throw new Error("Not enough cash.");
@@ -1217,34 +1449,215 @@ async function executeTrade(mode, usdAmount, sellAll = false) {
       const impact = Math.min(0.25, (usdAmount / marketCapNow) * IMPACT_FACTOR);
       price = price * (1 + impact);
       balance -= usdAmount;
+      costBasis += usdAmount; // track total cost for P&L
       holdings += coinAmount;
       tx.update(marketRef, { price, marketCap: price * TOTAL_SUPPLY });
-      tx.update(uref, { balance, holdings });
+      tx.update(uref, { balance, holdings, costBasis });
       const tradeDoc = doc(tradesCol);
       tx.set(tradeDoc, {
         uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
-        type: "buy", usdAmount, coinAmount, price, timestamp: serverTimestamp()
+        type: "buy", usdAmount, coinAmount, price, callingIt: callingIt || "",
+        timestamp: serverTimestamp()
       });
     } else {
       const priceNow = marketSnap.data().price;
-      // When selling all, use exact holdings to avoid floating-point dust
       const coinAmount = sellAll ? holdings : usdAmount / priceNow;
       if (coinAmount > holdings + 1e-9) throw new Error("Not enough $PLTY held.");
       const usdReceived = coinAmount * priceNow;
       const impact = Math.min(0.25, (usdReceived / marketCapNow) * IMPACT_FACTOR);
       price = priceNow * (1 - impact);
       balance += usdReceived;
+      // Reduce costBasis proportionally
+      const sellRatio = holdings > 0 ? coinAmount / holdings : 0;
+      costBasis = costBasis * (1 - sellRatio);
       holdings -= coinAmount;
-      // clamp to zero to eliminate floating-point dust when selling 100%
-      if (holdings < 1e-9) holdings = 0;
+      if (holdings < 1e-9) { holdings = 0; costBasis = 0; }
       tx.update(marketRef, { price, marketCap: price * TOTAL_SUPPLY });
-      tx.update(uref, { balance, holdings });
+      tx.update(uref, { balance, holdings, costBasis });
       const tradeDoc = doc(tradesCol);
       tx.set(tradeDoc, {
         uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
-        type: "sell", usdAmount: usdReceived, coinAmount, price, timestamp: serverTimestamp()
+        type: "sell", usdAmount: usdReceived, coinAmount, price, callingIt: callingIt || "",
+        timestamp: serverTimestamp()
       });
     }
+  });
+}
+
+// ===========================================================
+// STOP-LOSS / TAKE-PROFIT
+// ===========================================================
+function loadTriggers() {
+  const saved = localStorage.getItem("plty_triggers");
+  if (saved) {
+    try {
+      const { sl, tp } = JSON.parse(saved);
+      stopLossPrice = sl || null;
+      takeProfitPrice = tp || null;
+      renderTriggerStatus();
+    } catch (_) {}
+  }
+}
+
+function saveTriggers() {
+  localStorage.setItem("plty_triggers", JSON.stringify({ sl: stopLossPrice, tp: takeProfitPrice }));
+}
+
+function setupTriggerUI() {
+  el("slBtn").addEventListener("click", () => {
+    const v = parseFloat(el("slInput").value);
+    if (!v || v <= 0) { stopLossPrice = null; } else { stopLossPrice = v; }
+    saveTriggers();
+    renderTriggerStatus();
+    toast(stopLossPrice ? `Stop-loss set at ${fmtPrice(stopLossPrice)}` : "Stop-loss cleared", false);
+  });
+  el("tpBtn").addEventListener("click", () => {
+    const v = parseFloat(el("tpInput").value);
+    if (!v || v <= 0) { takeProfitPrice = null; } else { takeProfitPrice = v; }
+    saveTriggers();
+    renderTriggerStatus();
+    toast(takeProfitPrice ? `Take-profit set at ${fmtPrice(takeProfitPrice)}` : "Take-profit cleared", false);
+  });
+}
+
+function renderTriggerStatus() {
+  const parts = [];
+  if (stopLossPrice) {
+    el("slInput").value = stopLossPrice;
+    el("slBtn").classList.add("active");
+    parts.push(`SL ${fmtPrice(stopLossPrice)}`);
+  } else {
+    el("slBtn").classList.remove("active");
+  }
+  if (takeProfitPrice) {
+    el("tpInput").value = takeProfitPrice;
+    el("tpBtn").classList.add("active");
+    parts.push(`TP ${fmtPrice(takeProfitPrice)}`);
+  } else {
+    el("tpBtn").classList.remove("active");
+  }
+  el("triggerStatus").textContent = parts.length ? "Active: " + parts.join(" · ") : "No triggers set";
+}
+
+async function checkTriggers() {
+  if (!currentUser || triggersExecuting) return;
+  const price = marketState.price;
+  if (!price) return;
+  const holdings = currentUser.holdings || 0;
+  if (holdings <= 0) return;
+
+  let shouldSell = false;
+  let reason = "";
+
+  if (stopLossPrice && price <= stopLossPrice) {
+    shouldSell = true;
+    reason = `Stop-loss triggered at ${fmtPrice(price)}`;
+  } else if (takeProfitPrice && price >= takeProfitPrice) {
+    shouldSell = true;
+    reason = `Take-profit triggered at ${fmtPrice(price)}`;
+  }
+
+  if (shouldSell) {
+    triggersExecuting = true;
+    // Clear triggers so they don't re-fire
+    stopLossPrice = null;
+    takeProfitPrice = null;
+    saveTriggers();
+    renderTriggerStatus();
+    try {
+      const usdVal = holdings * price;
+      await executeTrade("sell", usdVal, true, "", true);
+      toast(`🤖 ${reason} — sold all PLTY`, false);
+    } catch (e) {
+      toast("Trigger failed: " + e.message, true);
+    }
+    triggersExecuting = false;
+  }
+}
+
+// ===========================================================
+// PRICE ALERTS (browser notifications)
+// ===========================================================
+function loadAlerts() {
+  const saved = localStorage.getItem("plty_alerts");
+  if (saved) {
+    try {
+      const { above, below } = JSON.parse(saved);
+      alertAbovePrice = above || null;
+      alertBelowPrice = below || null;
+      alertAboveFired = false;
+      alertBelowFired = false;
+    } catch (_) {}
+  }
+}
+
+function saveAlerts() {
+  localStorage.setItem("plty_alerts", JSON.stringify({ above: alertAbovePrice, below: alertBelowPrice }));
+}
+
+function setupAlertUI() {
+  el("alertSetBtn").addEventListener("click", async () => {
+    const above = parseFloat(el("alertAbove").value) || null;
+    const below = parseFloat(el("alertBelow").value) || null;
+
+    // Request notification permission
+    if ((above || below) && "Notification" in window) {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        el("alertStatus").textContent = "⚠ Notifications blocked — please allow in browser settings";
+        return;
+      }
+    }
+
+    alertAbovePrice = above;
+    alertBelowPrice = below;
+    alertAboveFired = false;
+    alertBelowFired = false;
+    saveAlerts();
+
+    const parts = [];
+    if (above) parts.push(`above ${fmtPrice(above)}`);
+    if (below) parts.push(`below ${fmtPrice(below)}`);
+    el("alertStatus").textContent = parts.length ? "✓ Alert set: " + parts.join(" or ") : "Alerts cleared";
+    if (parts.length) toast("Price alert saved", false);
+  });
+}
+
+function checkAlerts() {
+  const price = marketState.price;
+  if (!price) return;
+
+  if (alertAbovePrice && !alertAboveFired && price >= alertAbovePrice) {
+    alertAboveFired = true;
+    sendAlert(`$PLTY above ${fmtPrice(alertAbovePrice)}`, `Current price: ${fmtPrice(price)}`);
+  }
+  if (alertBelowPrice && !alertBelowFired && price <= alertBelowPrice) {
+    alertBelowFired = true;
+    sendAlert(`$PLTY below ${fmtPrice(alertBelowPrice)}`, `Current price: ${fmtPrice(price)}`);
+  }
+}
+
+function sendAlert(title, body) {
+  toast(`🔔 ${title} — ${body}`, false);
+  if ("Notification" in window && Notification.permission === "granted") {
+    try {
+      new Notification(title, { body, icon: DEFAULT_AVATAR });
+    } catch (_) {}
+  }
+}
+
+// ===========================================================
+// REFERRAL
+// ===========================================================
+function setupReferral() {
+  el("copyRefBtn").addEventListener("click", () => {
+    if (!currentUser) return;
+    const url = `${location.origin}${location.pathname}?ref=${encodeURIComponent(currentUser.username)}`;
+    navigator.clipboard.writeText(url).then(() => {
+      toast("Referral link copied!", false);
+    }).catch(() => {
+      prompt("Copy your referral link:", url);
+    });
   });
 }
 
@@ -1266,9 +1679,10 @@ function toast(msg, isError) {
 el("profileChip").addEventListener("click", () => {
   document.querySelectorAll(".panel-tab").forEach(b => b.classList.remove("active"));
   document.querySelector('[data-panel="wallet"]').classList.add("active");
-  ["feed", "traders", "wallet"].forEach(p => {
+  PANELS.forEach(p => {
     el("panel" + p[0].toUpperCase() + p.slice(1)).classList.toggle("hidden", p !== "wallet");
   });
+  drawSparkline();
 });
 
 el("logoutBtn").addEventListener("click", async () => {

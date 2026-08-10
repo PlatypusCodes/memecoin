@@ -6,6 +6,10 @@
 <title>$PLTY — Platypus</title>
 <meta name="description" content="The one-coin market. Trade Platypus." />
 <link rel="icon" type="image/png" href="https://avatars.githubusercontent.com/u/298894342?s=60&v=4" />
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#0b0e0c" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -58,6 +62,11 @@
       <label class="field">
         <span class="field-label">Password</span>
         <input id="signupPassword" type="password" placeholder="8+ characters, incl. a number & symbol" autocomplete="new-password" minlength="8" required />
+      </label>
+      <!-- Referral code row -->
+      <label class="field" id="refField">
+        <span class="field-label">Referral code <span class="field-optional">(optional — get +$500)</span></span>
+        <input id="refInput" type="text" maxlength="20" placeholder="e.g. bill_hunter" autocomplete="off" />
       </label>
       <button type="submit" class="btn btn-primary btn-block" id="onboardSubmit">Enter the pond</button>
       <p class="auth-error" id="authError"></p>
@@ -176,23 +185,35 @@
     <aside class="side-col">
 
       <div class="panel-tabs">
-        <button class="panel-tab active" data-panel="feed">Live Feed</button>
-        <button class="panel-tab" data-panel="traders">All Traders</button>
+        <button class="panel-tab active" data-panel="feed">Feed</button>
+        <button class="panel-tab" data-panel="leaderboard">Board</button>
         <button class="panel-tab" data-panel="wallet">Wallet</button>
       </div>
 
+      <!-- FEED PANEL -->
       <div class="panel" id="panelFeed">
         <ul class="feed-list" id="feedList"></ul>
       </div>
 
-      <div class="panel hidden" id="panelTraders">
-        <ul class="trader-list" id="traderList"></ul>
+      <!-- LEADERBOARD PANEL -->
+      <div class="panel hidden" id="panelLeaderboard">
+        <div class="lb-header">
+          <div class="lb-sort-tabs">
+            <button class="lb-sort active" data-sort="pnl">P&amp;L</button>
+            <button class="lb-sort" data-sort="portfolio">Portfolio</button>
+            <button class="lb-sort" data-sort="volume">Volume</button>
+          </div>
+          <span class="lb-reset-note" id="lbResetNote">Resets weekly</span>
+        </div>
+        <ul class="lb-list" id="lbList"></ul>
       </div>
 
+      <!-- WALLET PANEL -->
       <div class="panel hidden" id="panelWallet">
         <div class="wallet-card">
           <span class="wallet-label">Portfolio Value</span>
           <span class="wallet-value" id="walletTotal">$0.00</span>
+          <span class="wallet-pnl" id="walletPnl"></span>
         </div>
         <div class="wallet-rows">
           <div class="wallet-row">
@@ -207,8 +228,68 @@
             <span>$PLTY Value</span>
             <span id="walletCoinsValue">$0.00</span>
           </div>
+          <div class="wallet-row wallet-pnl-row">
+            <span>Unrealised P&amp;L</span>
+            <span id="walletUnrealised">$0.00 (0.00%)</span>
+          </div>
         </div>
-        <button class="btn btn-ghost btn-block" id="logoutBtn">Switch trader</button>
+
+        <!-- Sparkline portfolio history -->
+        <div class="sparkline-wrap">
+          <div class="sparkline-label">Portfolio history</div>
+          <canvas id="sparkCanvas" height="60"></canvas>
+        </div>
+
+        <!-- Stop-loss / take-profit -->
+        <div class="triggers-section">
+          <div class="triggers-title">Auto triggers</div>
+          <div class="trigger-row">
+            <span class="trigger-label">Stop-loss at</span>
+            <div class="trigger-input-wrap">
+              <span class="trigger-prefix">$</span>
+              <input id="slInput" type="number" step="any" min="0" placeholder="price" class="trigger-input" />
+            </div>
+            <button class="trigger-btn" id="slBtn">Set</button>
+          </div>
+          <div class="trigger-row">
+            <span class="trigger-label">Take-profit at</span>
+            <div class="trigger-input-wrap">
+              <span class="trigger-prefix">$</span>
+              <input id="tpInput" type="number" step="any" min="0" placeholder="price" class="trigger-input" />
+            </div>
+            <button class="trigger-btn" id="tpBtn">Set</button>
+          </div>
+          <div class="trigger-status" id="triggerStatus"></div>
+        </div>
+
+        <!-- Referral section -->
+        <div class="referral-section">
+          <div class="referral-title">Referral link</div>
+          <p class="referral-sub">Share your link — both you and the new trader get <strong>+$500</strong> bonus cash.</p>
+          <button class="btn btn-ghost btn-block" id="copyRefBtn">Copy my referral link</button>
+        </div>
+
+        <!-- Price alerts -->
+        <div class="alerts-section">
+          <div class="alerts-title">Price alerts</div>
+          <div class="alert-row">
+            <span class="alert-dir">Notify me when PLTY goes</span>
+          </div>
+          <div class="alert-inputs">
+            <div class="trigger-input-wrap flex1">
+              <span class="trigger-prefix">above $</span>
+              <input id="alertAbove" type="number" step="any" min="0" placeholder="price" class="trigger-input" />
+            </div>
+            <div class="trigger-input-wrap flex1">
+              <span class="trigger-prefix">below $</span>
+              <input id="alertBelow" type="number" step="any" min="0" placeholder="price" class="trigger-input" />
+            </div>
+          </div>
+          <button class="btn btn-ghost btn-block" id="alertSetBtn">Enable alerts</button>
+          <div class="alert-status" id="alertStatus"></div>
+        </div>
+
+        <button class="btn btn-ghost btn-block" id="logoutBtn" style="margin-top:10px">Switch trader</button>
       </div>
 
     </aside>
@@ -229,6 +310,11 @@
       <span class="sheet-amount-value" id="sheetAmountValue">0</span>
     </div>
     <span class="sheet-convert" id="sheetConvert">≈ 0.00000000 PLTY</span>
+
+    <!-- "Calling it" post field -->
+    <div class="calling-it-wrap">
+      <input id="callingItInput" type="text" maxlength="60" placeholder='Optional: "buying the dip 🤙" (shown in feed)' class="calling-it-input" autocomplete="off" />
+    </div>
 
     <div class="sheet-presets" id="sheetPresets">
       <button class="chip" data-amt="10">$10</button>
@@ -253,6 +339,41 @@
       </div>
     </div>
     <p class="sheet-error" id="sheetError"></p>
+  </div>
+</div>
+
+<!-- ============ TRADER PROFILE MODAL ============ -->
+<div class="modal-backdrop hidden" id="profileModal">
+  <div class="modal-card" id="profileModalCard">
+    <button class="modal-close" id="profileModalClose">&times;</button>
+    <div class="modal-avatar-wrap">
+      <img id="modalAvatar" src="" alt="" />
+      <div class="modal-user-info">
+        <span class="modal-username" id="modalUsername"></span>
+        <span class="modal-since" id="modalSince"></span>
+      </div>
+    </div>
+    <div class="modal-stats">
+      <div class="modal-stat">
+        <span class="modal-stat-label">Volume</span>
+        <span class="modal-stat-val" id="modalVolume">$0</span>
+      </div>
+      <div class="modal-stat">
+        <span class="modal-stat-label">Trades</span>
+        <span class="modal-stat-val" id="modalTrades">0</span>
+      </div>
+      <div class="modal-stat">
+        <span class="modal-stat-label">Buys</span>
+        <span class="modal-stat-val up" id="modalBuys">0</span>
+      </div>
+      <div class="modal-stat">
+        <span class="modal-stat-label">Sells</span>
+        <span class="modal-stat-val down" id="modalSells">0</span>
+      </div>
+    </div>
+    <div class="modal-badges" id="modalBadges"></div>
+    <div class="modal-trades-title">Recent trades</div>
+    <ul class="modal-trades-list" id="modalTradesList"></ul>
   </div>
 </div>
 
