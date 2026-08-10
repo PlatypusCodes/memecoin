@@ -62,13 +62,15 @@ function stepPrice(price, tickIdx) {
   const r3 = seededRandom(tickIdx, 3);
   const r4 = seededRandom(tickIdx, 4);
   let changePct;
-  if (r3 < 0.012) {
-    const magnitude = 0.15 + r2 * 0.35;
+  if (r3 < 0.05) {
+    // pump/dump spike — bigger and more frequent
+    const magnitude = 0.25 + r2 * 0.55;
     const dir = r4 < 0.5 ? -1 : 1;
     changePct = dir * magnitude;
   } else {
-    const drift = (r1 - 0.5) * 0.02;
-    const noise = (r2 - 0.5) * 0.05;
+    // regular tick — much wider swings
+    const drift = (r1 - 0.5) * 0.08;
+    const noise = (r2 - 0.5) * 0.18;
     changePct = drift + noise;
   }
   return Math.max(price * (1 + changePct), 0.000000001);
@@ -577,7 +579,7 @@ document.querySelectorAll(".ct-btn").forEach(btn => {
 });
 
 const TF_CONFIG = {
-  live: { bucketMs: 4 * TICK_MS, maxCandles: 100 },
+  live: { bucketMs: 10 * TICK_MS, maxCandles: 80 },
   "1m": { bucketMs: 60 * 1000, maxCandles: 80 },
   "5m": { bucketMs: 5 * 60 * 1000, maxCandles: 80 },
   "10m": { bucketMs: 10 * 60 * 1000, maxCandles: 80 },
@@ -591,14 +593,37 @@ function buildCandles(bucketMs, maxCandles) {
   for (const t of ticks) {
     const bucket = Math.floor(t.ts / bucketMs) * bucketMs;
     if (!map.has(bucket)) {
-      map.set(bucket, { ts: bucket, open: t.price, high: t.price, low: t.price, close: t.price });
+      map.set(bucket, { ts: bucket, open: t.price, high: t.price, low: t.price, close: t.price, _ticks: [] });
     }
     const c = map.get(bucket);
     c.high = Math.max(c.high, t.price);
     c.low = Math.min(c.low, t.price);
     c.close = t.price;
+    c._ticks.push(t.price);
   }
   const arr = [...map.values()].sort((a, b) => a.ts - b.ts);
+
+  // Ensure candles have meaningful OHLC by synthesising wicks
+  // when a bucket only has one tick (open == close == high == low).
+  for (let i = 0; i < arr.length; i++) {
+    const c = arr[i];
+    if (c.high === c.low) {
+      // Flat candle — synthesise a realistic spread from neighbours
+      const prevClose = i > 0 ? arr[i - 1].close : c.open;
+      const nextOpen  = i < arr.length - 1 ? arr[i + 1].open : c.close;
+      const ref = c.close;
+      // Use a seeded spread based on position so it's deterministic
+      const r = seededRandom(Math.floor(c.ts / 1000), 99);
+      const spread = ref * (0.008 + r * 0.022); // 0.8%–3% synthetic wick
+      c.high = ref + spread;
+      c.low  = ref - spread;
+      // Give the body a slight lean based on surrounding price direction
+      const dir = nextOpen > prevClose ? 1 : -1;
+      c.open  = ref - dir * spread * 0.4;
+      c.close = ref + dir * spread * 0.4;
+    }
+  }
+
   return arr.slice(-maxCandles);
 }
 
@@ -701,9 +726,9 @@ function drawCandleSeries(candles, xFor, yFor, xStep) {
     const yHigh = yFor(c.high), yLow = yFor(c.low);
     const yOpen = yFor(c.open), yClose = yFor(c.close);
     const bodyTop = Math.min(yOpen, yClose);
-    const bodyH = Math.max(1.6, Math.abs(yClose - yOpen));
+    const bodyH = Math.max(4, Math.abs(yClose - yOpen));
     const bodyBottom = bodyTop + bodyH;
-    const r = Math.min(2.5, bodyW / 4);
+    const r = Math.min(3, bodyW / 3.5);
 
     // faint vertical glow behind the whole candle for depth
     ctx.save();
@@ -711,8 +736,9 @@ function drawCandleSeries(candles, xFor, yFor, xStep) {
     ctx.shadowBlur = 6;
 
     // upper wick (high -> body top)
-    ctx.strokeStyle = `rgba(${rgb},0.85)`;
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = `rgba(${rgb},0.9)`;
+    ctx.lineWidth = Math.max(1.5, bodyW * 0.12);
+    ctx.lineCap = "round";
     ctx.beginPath();
     ctx.moveTo(x, yHigh);
     ctx.lineTo(x, bodyTop);
