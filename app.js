@@ -87,6 +87,7 @@ let chartType = localStorage.getItem("plty_chart_type") || "candles";
 let hoverPoint = null;
 let sheetMode = "buy";
 let sheetAmount = "";
+let sheetSellAll = false;
 
 // ===========================================================
 // AUTH / ONBOARDING
@@ -885,15 +886,43 @@ function drawPulseDot(x, y) {
 
 function drawTradeMarkers() {
   if (!chartLayout) return;
-  const { candles, xFor, yFor, bucketMs } = chartLayout;
+  const { candles, xFor, yFor, bucketMs, min, max, padT, padB, h } = chartLayout;
   if (!candles.length) return;
   const firstTs = candles[0].ts, lastTs = candles[candles.length - 1].ts + bucketMs;
   const visible = trades.filter(t => t.ts >= firstTs && t.ts < lastTs).slice(0, 120);
 
+  // Build a map from bucket-ts -> candle index for accurate x placement
+  const bucketToIdx = new Map();
+  candles.forEach((c, i) => bucketToIdx.set(c.ts, i));
+
+  const markerData = [];
   for (const t of visible) {
-    const idx = Math.min(candles.length - 1, Math.max(0, Math.floor((t.ts - firstTs) / bucketMs)));
+    // Find the candle bucket this trade falls into
+    const tradeBucket = Math.floor(t.ts / bucketMs) * bucketMs;
+    let idx = bucketToIdx.has(tradeBucket)
+      ? bucketToIdx.get(tradeBucket)
+      : Math.min(candles.length - 1, Math.max(0, Math.floor((t.ts - firstTs) / bucketMs)));
+    idx = Math.min(candles.length - 1, Math.max(0, idx));
+
     const x = xFor(idx);
-    const y = yFor(t.price);
+
+    // Use the matching candle's close price as the y anchor so the marker
+    // sits on the actual chart line/candle rather than potentially off-chart
+    const candle = candles[idx];
+    const anchorPrice = t.price != null && t.price >= min && t.price <= max
+      ? t.price
+      : candle.close;
+    const y = yFor(anchorPrice);
+
+    // Clamp y so the circle is always fully visible within the plot area
+    const plotTop = padT + 10, plotBottom = h - padB - 10;
+    const cy = Math.min(plotBottom, Math.max(plotTop, y));
+
+    markerData.push({ ...t, _x: x, _y: cy });
+  }
+
+  for (const t of markerData) {
+    const { _x: x, _y: y } = t;
     const color = t.type === "buy" ? (cssVar("--toxic") || "#7cff6b") : (cssVar("--venom") || "#ff3d6e");
 
     ctx.save();
@@ -916,7 +945,7 @@ function drawTradeMarkers() {
     }
     ctx.restore();
   }
-  chartLayout.visibleTrades = visible.map(t => ({ ...t, _x: xFor(Math.min(candles.length - 1, Math.max(0, Math.floor((t.ts - firstTs) / bucketMs)))), _y: yFor(t.price) }));
+  chartLayout.visibleTrades = markerData;
 }
 
 function drawHoverTooltip() {
@@ -967,6 +996,7 @@ setInterval(() => { if (booted) drawChart(); }, 1500);
 function openSheet(mode) {
   sheetMode = mode;
   sheetAmount = "";
+  sheetSellAll = false;
   el("sheetError").textContent = "";
   el("sheetTitle").textContent = mode === "buy" ? "Buy $PLTY" : "Sell $PLTY";
   el("slideLabel").textContent = mode === "buy" ? "Slide to Buy" : "Slide to Sell";
@@ -1002,6 +1032,7 @@ el("keypad").addEventListener("click", (e) => {
   const btn = e.target.closest("button");
   if (!btn) return;
   const k = btn.dataset.k;
+  sheetSellAll = false; // manual input clears sell-all flag
   if (k === "back") { sheetAmount = sheetAmount.slice(0, -1); }
   else if (k === ".") { if (!sheetAmount.includes(".")) sheetAmount += "."; }
   else {
@@ -1020,9 +1051,12 @@ el("sheetPresets").addEventListener("click", (e) => {
   } else if (btn.dataset.max) {
     const price = marketState.price || STARTING_PRICE;
     if (sheetMode === "buy") {
+      sheetSellAll = false;
       sheetAmount = String(Math.floor((currentUser?.balance || 0) * 100) / 100);
     } else {
-      sheetAmount = String(Math.floor((currentUser?.holdings || 0) * price * 100) / 100);
+      sheetSellAll = true; // flag to sell exact holdings, not a USD-rounded amount
+      const usdVal = (currentUser?.holdings || 0) * price;
+      sheetAmount = String(Math.floor(usdVal * 100) / 100);
     }
   }
   renderSheetAmount();
@@ -1046,6 +1080,7 @@ function getTrackBounds() {
 }
 
 function onPointerDown(e) {
+  e.preventDefault();
   dragging = true;
   dragStartX = (e.touches ? e.touches[0].clientX : e.clientX);
   const t = slideThumb.style.transform.match(/-?\d+/);
@@ -1054,6 +1089,7 @@ function onPointerDown(e) {
 }
 function onPointerMove(e) {
   if (!dragging) return;
+  e.preventDefault(); // prevent page scroll and image drag during slide
   const clientX = (e.touches ? e.touches[0].clientX : e.clientX);
   const { maxX } = getTrackBounds();
   let dx = thumbStartX + (clientX - dragStartX);
@@ -1072,10 +1108,10 @@ function onPointerUp() {
   const dx = t ? parseFloat(t[0]) : 0;
   if (dx < maxX - 2) resetSlider();
 }
-slideThumb.addEventListener("mousedown", onPointerDown);
-slideThumb.addEventListener("touchstart", onPointerDown, { passive: true });
-window.addEventListener("mousemove", onPointerMove);
-window.addEventListener("touchmove", onPointerMove, { passive: true });
+slideThumb.addEventListener("mousedown", onPointerDown, { passive: false });
+slideThumb.addEventListener("touchstart", onPointerDown, { passive: false });
+window.addEventListener("mousemove", onPointerMove, { passive: false });
+window.addEventListener("touchmove", onPointerMove, { passive: false });
 window.addEventListener("mouseup", onPointerUp);
 window.addEventListener("touchend", onPointerUp);
 
@@ -1088,7 +1124,7 @@ async function confirmTrade() {
   slideTrackWrap.querySelector(".slide-track").classList.add("confirmed");
 
   try {
-    await executeTrade(sheetMode, amt);
+    await executeTrade(sheetMode, amt, sheetSellAll);
     toast(`${sheetMode === "buy" ? "Bought" : "Sold"} ${fmtUsd(amt)} of $PLTY`, false);
     setTimeout(closeSheet, 450);
   } catch (e) {
@@ -1097,7 +1133,7 @@ async function confirmTrade() {
   }
 }
 
-async function executeTrade(mode, usdAmount) {
+async function executeTrade(mode, usdAmount, sellAll = false) {
   const uref = doc(usersCol, currentUser.uid);
   const IMPACT_FACTOR = 2.2;
 
@@ -1126,13 +1162,16 @@ async function executeTrade(mode, usdAmount) {
       });
     } else {
       const priceNow = marketSnap.data().price;
-      const coinAmount = usdAmount / priceNow;
+      // When selling all, use exact holdings to avoid floating-point dust
+      const coinAmount = sellAll ? holdings : usdAmount / priceNow;
       if (coinAmount > holdings + 1e-9) throw new Error("Not enough $PLTY held.");
       const usdReceived = coinAmount * priceNow;
       const impact = Math.min(0.25, (usdReceived / marketCapNow) * IMPACT_FACTOR);
       price = priceNow * (1 - impact);
       balance += usdReceived;
       holdings -= coinAmount;
+      // clamp to zero to eliminate floating-point dust when selling 100%
+      if (holdings < 1e-9) holdings = 0;
       tx.update(marketRef, { price, marketCap: price * TOTAL_SUPPLY });
       tx.update(uref, { balance, holdings });
       const tradeDoc = doc(tradesCol);
