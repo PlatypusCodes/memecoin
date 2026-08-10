@@ -344,7 +344,14 @@ function boot() {
 
 function subscribeMarket() {
   onSnapshot(marketRef, (snap) => {
-    if (!snap.exists()) return;
+    if (!snap.exists()) {
+      // Doc doesn't exist yet (fresh project) — render with defaults so the
+      // UI isn't blank, and let the tick loop create it on the next tick.
+      renderTopStats();
+      renderVial();
+      renderWallet();
+      return;
+    }
     marketState = snap.data();
     // Keep local tick cache in sync so advanceTick steps from the right place
     if (marketState.lastTickIndex && marketState.lastTickIndex > _lastKnownTickIdx) {
