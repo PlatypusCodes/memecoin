@@ -340,127 +340,89 @@ function boot() {
 // ===========================================================
 // MARKET STATE
 // ===========================================================
-async function ensureMarketDoc() {
-  const snap = await getDoc(marketRef);
-  if (!snap.exists()) {
-    const now = Date.now();
-    await setDoc(marketRef, {
-      price: STARTING_PRICE,
-      marketCap: STARTING_PRICE * TOTAL_SUPPLY,
-      lastTickIndex: Math.floor(now / TICK_MS),
-      priceOpen24h: STARTING_PRICE,
-      createdAt: now
-    }).catch(() => {});
-  }
-}
 
 function subscribeMarket() {
-  ensureMarketDoc().finally(() => {
-    onSnapshot(marketRef, (snap) => {
-      if (!snap.exists()) return;
-      marketState = snap.data();
-      renderTopStats();
-      renderVial();
-      renderWallet();
-      renderSheetConvert();
-      checkTriggers();
-      checkAlerts();
-    });
+  onSnapshot(marketRef, (snap) => {
+    if (!snap.exists()) return;
+    marketState = snap.data();
+    renderTopStats();
+    renderVial();
+    renderWallet();
+    renderSheetConvert();
+    checkTriggers();
+    checkAlerts();
   });
 }
 
-// ---------- single-tab leader election for tick advancement ----------
-// Only one tab drives the price engine. Others just read via onSnapshot.
-// This eliminates the flood of failed-precondition 400s from racing transactions.
-const LEADER_KEY = "plty_tick_leader";
-const LEADER_TTL = 8000; // ms — if leader goes silent, another tab takes over
-let isTickLeader = false;
-let leaderHeartbeat = null;
+// ---------- collision-free tick engine ----------
+// The price is 100% deterministic from the tick index (seeded RNG).
+// So any tab can compute the correct price independently — no transaction needed.
+// Each tab writes its own tick doc via setDoc (idempotent, last-write-wins on
+// same key is fine since all tabs compute the same price for the same tickIdx).
+// market/state is updated with a plain updateDoc (no currentDocument constraint)
+// so there's no optimistic-lock conflict and no 400s.
 
-function tryBecomeLeader() {
-  const now = Date.now();
-  const existing = localStorage.getItem(LEADER_KEY);
-  if (existing) {
-    const { ts } = JSON.parse(existing);
-    if (now - ts < LEADER_TTL) return false; // another tab is alive
+// Tabs add a small random jitter so they don't all fire at the same millisecond.
+const TICK_JITTER = Math.floor(Math.random() * 800); // 0–800 ms
+
+// Compute the deterministic price for any tick index from STARTING_PRICE
+function priceAtTick(tickIdx) {
+  // Walk forward from tick 0. We cache the last known good position so we
+  // don't recompute the whole history every call.
+  if (!priceAtTick._cache) {
+    priceAtTick._cache = { idx: 0, price: STARTING_PRICE };
   }
-  localStorage.setItem(LEADER_KEY, JSON.stringify({ ts: now }));
-  return true;
+  let { idx, price } = priceAtTick._cache;
+  if (tickIdx < idx) {
+    // Rare: reset and walk from start (only happens after a very long session reset)
+    idx = 0; price = STARTING_PRICE;
+  }
+  for (let i = idx + 1; i <= tickIdx; i++) {
+    price = stepPrice(price, i);
+  }
+  priceAtTick._cache = { idx: tickIdx, price };
+  return price;
 }
-
-function startLeaderElection() {
-  // Try immediately, then check every 4s
-  isTickLeader = tryBecomeLeader();
-  if (isTickLeader) {
-    leaderHeartbeat = setInterval(() => {
-      localStorage.setItem(LEADER_KEY, JSON.stringify({ ts: Date.now() }));
-    }, 3000);
-  } else {
-    // Poll to take over if leader disappears
-    setInterval(() => {
-      if (!isTickLeader) {
-        isTickLeader = tryBecomeLeader();
-        if (isTickLeader) {
-          leaderHeartbeat = setInterval(() => {
-            localStorage.setItem(LEADER_KEY, JSON.stringify({ ts: Date.now() }));
-          }, 3000);
-        }
-      }
-    }, 5000);
-  }
-}
-
-window.addEventListener("beforeunload", () => {
-  if (isTickLeader) localStorage.removeItem(LEADER_KEY);
-});
-
-// Prevent leader from running while the tab is hidden (saves writes, reduces conflicts)
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden && isTickLeader) {
-    localStorage.removeItem(LEADER_KEY);
-    isTickLeader = false;
-    clearInterval(leaderHeartbeat);
-  }
-});
 
 async function advanceTick() {
-  if (!isTickLeader) return; // only the elected tab writes ticks
-  const nowTick = Math.floor(Date.now() / TICK_MS);
-  try {
-    await runTransaction(db, async (tx) => {
-      const snap = await tx.get(marketRef);
-      if (!snap.exists()) return;
-      const data = snap.data();
-      let tickIdx = data.lastTickIndex || nowTick;
-      if (tickIdx >= nowTick) return;
-      let price = data.price;
-      const steps = Math.min(nowTick - tickIdx, 5);
-      for (let i = 1; i <= steps; i++) {
-        price = stepPrice(price, tickIdx + i);
-      }
-      tickIdx += steps;
-      tx.update(marketRef, {
-        price,
-        marketCap: price * TOTAL_SUPPLY,
-        lastTickIndex: tickIdx
-      });
-    });
-  } catch (e) { /* contention is harmless — market doc is already ahead */ }
+  if (document.hidden) return; // don't write when tab is backgrounded
 
+  const nowTick = Math.floor(Date.now() / TICK_MS);
+  const price = priceAtTick(nowTick);
+  const tid = `t_${nowTick}`;
+
+  // Write tick doc — setDoc is idempotent, multiple tabs writing same key is fine
   try {
-    const freshSnap = await getDoc(marketRef);
-    if (freshSnap.exists()) {
-      const p = freshSnap.data().price;
-      const tid = `t_${nowTick}`;
-      await setDoc(doc(ticksCol, tid), { price: p, ts: nowTick * TICK_MS });
-    }
-  } catch (e) { /* ignore */ }
+    await setDoc(doc(ticksCol, tid), { price, ts: nowTick * TICK_MS });
+  } catch (e) { return; } // network issue, skip this tick
+
+  // Update market state with a plain write — no currentDocument constraint,
+  // no optimistic locking, no 400s. All tabs write the same deterministic price
+  // so last-write-wins is correct.
+  try {
+    await updateDoc(marketRef, {
+      price,
+      marketCap: price * TOTAL_SUPPLY,
+      lastTickIndex: nowTick
+    });
+  } catch (e) {
+    // If market doc doesn't exist yet, create it
+    try {
+      await setDoc(marketRef, {
+        price, marketCap: price * TOTAL_SUPPLY,
+        lastTickIndex: nowTick, priceOpen24h: STARTING_PRICE,
+        createdAt: Date.now()
+      });
+    } catch (_) {}
+  }
 }
 
 function startTickLoop() {
-  startLeaderElection();
-  advanceTick();
-  setInterval(advanceTick, TICK_MS);
+  // Stagger first tick by jitter to reduce simultaneous writes across tabs
+  setTimeout(() => {
+    advanceTick();
+    setInterval(advanceTick, TICK_MS);
+  }, TICK_JITTER);
 }
 
 // ===========================================================
@@ -1270,6 +1232,44 @@ function drawTradeMarkers() {
     ctx.restore();
   }
   chartLayout.visibleTrades = markerData;
+
+  drawTriggerLines();
+}
+
+function drawTriggerLines() {
+  if (!chartLayout) return;
+  const { yFor, w, padL, padR, min, max } = chartLayout;
+
+  function drawHLine(price, kind, label) {
+    if (!price || price <= 0) return;
+    if (price < min || price > max) return;
+    const y = yFor(price);
+    const rgb = kind === "sl" ? "255,61,110" : "124,255,107";
+    const hex  = kind === "sl" ? "#ff3d6e"    : "#7cff6b";
+    ctx.save();
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = "rgba(" + rgb + ",0.7)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(w - padR + 6, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const txt = label + " " + fmtPrice(price);
+    ctx.font = "bold 9px JetBrains Mono, monospace";
+    const tw = ctx.measureText(txt).width;
+    const px = w - padR + 10, py = y, pw = tw + 8, ph = 14;
+    roundRectPath(ctx, px, py - ph/2, pw, ph, 3);
+    ctx.fillStyle = "rgba(" + rgb + ",0.18)";
+    ctx.fill();
+    ctx.strokeStyle = hex; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = hex; ctx.textBaseline = "middle";
+    ctx.fillText(txt, px + 4, py);
+    ctx.restore();
+  }
+
+  if (stopLossPrice)   drawHLine(stopLossPrice,   "sl", "SL");
+  if (takeProfitPrice) drawHLine(takeProfitPrice,  "tp", "TP");
 }
 
 function clusterMarkers(markers, radius) {
@@ -1345,16 +1345,37 @@ setInterval(() => { if (booted) drawChart(); }, 1500);
 // ===========================================================
 // TRADE SHEET
 // ===========================================================
+// Remember whether the user last chose "Max" for each mode
+const sheetLastMax = { buy: false, sell: false };
+
+function applyMaxAmount(mode) {
+  const price = marketState.price || STARTING_PRICE;
+  if (mode === "buy") {
+    sheetSellAll = false;
+    sheetAmount = String(Math.floor((currentUser?.balance || 0) * 100) / 100);
+  } else {
+    sheetSellAll = true;
+    const usdVal = (currentUser?.holdings || 0) * price;
+    sheetAmount = String(Math.floor(usdVal * 100) / 100);
+  }
+}
+
 function openSheet(mode) {
   sheetMode = mode;
-  sheetAmount = "";
   sheetSellAll = false;
+  sheetAmount = "";
   el("sheetError").textContent = "";
   el("callingItInput").value = "";
   el("sheetTitle").textContent = mode === "buy" ? "Buy $PLTY" : "Sell $PLTY";
   el("slideLabel").textContent = mode === "buy" ? "Slide to Buy" : "Slide to Sell";
   el("slideConfirm").querySelector(".slide-track").className = "slide-track" + (mode === "sell" ? " selling" : "");
   resetSlider();
+
+  // Auto-apply max if the user chose it last time for this mode
+  if (sheetLastMax[mode]) {
+    applyMaxAmount(mode);
+  }
+
   renderSheetAmount();
   renderSheetConvert();
   el("sheetBackdrop").classList.remove("hidden");
@@ -1399,17 +1420,12 @@ el("sheetPresets").addEventListener("click", (e) => {
   const btn = e.target.closest("button");
   if (!btn) return;
   if (btn.dataset.amt) {
+    sheetLastMax[sheetMode] = false; // user picked a fixed amount, clear max memory
+    sheetSellAll = false;
     sheetAmount = btn.dataset.amt;
   } else if (btn.dataset.max) {
-    const price = marketState.price || STARTING_PRICE;
-    if (sheetMode === "buy") {
-      sheetSellAll = false;
-      sheetAmount = String(Math.floor((currentUser?.balance || 0) * 100) / 100);
-    } else {
-      sheetSellAll = true;
-      const usdVal = (currentUser?.holdings || 0) * price;
-      sheetAmount = String(Math.floor(usdVal * 100) / 100);
-    }
+    sheetLastMax[sheetMode] = true; // remember they want max for next open
+    applyMaxAmount(sheetMode);
   }
   renderSheetAmount();
   renderSheetConvert();
@@ -1478,6 +1494,7 @@ async function confirmTrade() {
   try {
     await executeTrade(sheetMode, amt, sheetSellAll, callingIt);
     toast(`${sheetMode === "buy" ? "Bought" : "Sold"} ${fmtUsd(amt)} of $PLTY`, false);
+    sheetLastMax[sheetMode] = false; // reset so next open doesn't auto-fill stale max
     setTimeout(closeSheet, 450);
   } catch (e) {
     errEl.textContent = e.message || "Trade failed.";
@@ -1571,6 +1588,7 @@ function setupTriggerUI() {
     saveTriggers();
     renderTriggerStatus();
     toast(stopLossPrice ? `Stop-loss set at ${fmtPrice(stopLossPrice)}` : "Stop-loss cleared", false);
+    drawChart();
   });
   el("tpBtn").addEventListener("click", () => {
     const v = parseFloat(el("tpInput").value);
@@ -1578,6 +1596,7 @@ function setupTriggerUI() {
     saveTriggers();
     renderTriggerStatus();
     toast(takeProfitPrice ? `Take-profit set at ${fmtPrice(takeProfitPrice)}` : "Take-profit cleared", false);
+    drawChart();
   });
 }
 
@@ -1627,6 +1646,7 @@ async function checkTriggers() {
   takeProfitPrice = null;
   saveTriggers();
   renderTriggerStatus();
+  drawChart();
 
   try {
     await executeTrade("sell", 0, true, "", true); // sellAll=true, amount ignored
