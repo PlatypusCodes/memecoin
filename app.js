@@ -63,17 +63,30 @@ function stepPrice(price, tickIdx) {
   const r4 = seededRandom(tickIdx, 4);
   let changePct;
   if (r3 < 0.05) {
-    // pump/dump spike — bigger and more frequent
-    const magnitude = 0.25 + r2 * 0.55;
+    // pump/dump spike — capped so dumps don't crater permanently
+    const magnitude = 0.12 + r2 * 0.28;
     const dir = r4 < 0.5 ? -1 : 1;
     changePct = dir * magnitude;
   } else {
-    // regular tick — much wider swings
-    const drift = (r1 - 0.5) * 0.08;
-    const noise = (r2 - 0.5) * 0.18;
+    // regular tick — energetic but bounded
+    const drift = (r1 - 0.5) * 0.06;
+    const noise = (r2 - 0.5) * 0.14;
     changePct = drift + noise;
   }
-  return Math.max(price * (1 + changePct), 0.000000001);
+  // Mean-reversion: if price drifts far from starting price, nudge it back.
+  // This prevents multi-hour flatlines near zero.
+  const ratio = price / STARTING_PRICE;
+  if (ratio < 0.15) {
+    // Very cheap — strong upward bias to recover
+    changePct += 0.06 + (1 - ratio) * 0.08;
+  } else if (ratio < 0.4) {
+    // Below floor — moderate recovery nudge
+    changePct += 0.025;
+  } else if (ratio > 8) {
+    // Overextended high — gentle gravity
+    changePct -= 0.02;
+  }
+  return Math.max(price * (1 + changePct), STARTING_PRICE * 0.05);
 }
 
 // ---------- state ----------
@@ -814,105 +827,107 @@ function roundRectPath(c, x, y, w, h, r) {
   c.closePath();
 }
 
-// ---------- smooth glowing line renderer ----------
+// ---------- realistic line renderer ----------
 function drawLineSeries(candles, xFor, yFor, padT, plotH) {
   if (candles.length < 2) {
     const p = candles[0];
-    const x = xFor(0), y = yFor(p.close);
-    drawPulseDot(x, y);
+    drawPulseDot(xFor(0), yFor(p.close));
     return;
   }
   const up = candles[candles.length - 1].close >= candles[0].close;
   const color = up ? (cssVar("--toxic") || "#7cff6b") : (cssVar("--venom") || "#ff3d6e");
-  const rgb = up ? "124,255,107" : "255,61,110";
+  const rgb   = up ? "124,255,107" : "255,61,110";
 
-  // Build a realistic point set: for each candle, synthesise 4 intra-candle
-  // sub-points (open → micro-swing → high/low probe → close) so the line has
-  // the jagged, energetic feel of a real 1-min chart rather than a smooth bezier.
+  // Build the point array. Strategy:
+  //   1. If a candle has multiple real ticks (_ticks), spread them evenly across
+  //      the candle's x-width — this gives the authentic jagged shape you see
+  //      in screenshot 2 for longer timeframes.
+  //   2. If a candle has only 1 tick, synthesise 4 sub-points from OHLC so even
+  //      the "live" (narrow) timeframe looks energetic.
   const pts = [];
+  const xW = xFor(1) - xFor(0); // pixels per candle slot
+
   for (let i = 0; i < candles.length; i++) {
-    const c = candles[i];
+    const c  = candles[i];
     const x0 = xFor(i);
-    const xW  = (xFor(1) - xFor(0)); // candle width in pixels
 
-    // Use the seeded RNG so the micro-moves are stable across redraws
-    const r1 = seededRandom(Math.floor(c.ts / 1000), 11);
-    const r2 = seededRandom(Math.floor(c.ts / 1000), 22);
-    const r3 = seededRandom(Math.floor(c.ts / 1000), 33);
-    const r4 = seededRandom(Math.floor(c.ts / 1000), 44);
+    if (c._ticks && c._ticks.length > 1) {
+      // Real tick prices — distribute across the candle's x-span
+      const step = xW / c._ticks.length;
+      c._ticks.forEach((p, ti) => {
+        pts.push({ x: x0 - xW * 0.5 + step * ti + step * 0.5, y: yFor(p) });
+      });
+    } else {
+      // Synthesise 4 OHLC sub-points using seeded RNG (stable across redraws)
+      const r1 = seededRandom(Math.floor(c.ts / 1000), 11);
+      const r2 = seededRandom(Math.floor(c.ts / 1000), 22);
+      const r3 = seededRandom(Math.floor(c.ts / 1000), 33);
+      const r4 = seededRandom(Math.floor(c.ts / 1000), 44);
+      const isUp = c.close >= c.open;
 
-    const isUp = c.close >= c.open;
-
-    // Point 0: candle open (left edge)
-    pts.push({ x: x0 - xW * 0.5 + 1, y: yFor(c.open) });
-
-    // Point 1: early micro-probe — price spikes slightly against the trend
-    const earlyProbe = isUp
-      ? c.open - (c.open - c.low) * (0.15 + r1 * 0.35)  // dip first
-      : c.open + (c.high - c.open) * (0.12 + r2 * 0.30); // pop first
-    pts.push({ x: x0 - xW * 0.18, y: yFor(earlyProbe) });
-
-    // Point 2: wick extreme (high or low depending on direction)
-    const wickPrice = isUp ? c.high : c.low;
-    pts.push({ x: x0 + xW * (0.1 + r3 * 0.25), y: yFor(wickPrice) });
-
-    // Point 3: late consolidation — pulls back toward close from the wick
-    const consolidate = isUp
-      ? c.high - (c.high - c.close) * (0.4 + r4 * 0.35)
-      : c.low  + (c.close - c.low)  * (0.4 + r4 * 0.35);
-    pts.push({ x: x0 + xW * 0.28, y: yFor(consolidate) });
+      // open
+      pts.push({ x: x0 - xW * 0.48, y: yFor(c.open) });
+      // early counter-trend probe
+      const earlyProbe = isUp
+        ? c.open - (c.open - c.low)  * (0.15 + r1 * 0.35)
+        : c.open + (c.high - c.open) * (0.12 + r2 * 0.30);
+      pts.push({ x: x0 - xW * 0.18, y: yFor(earlyProbe) });
+      // wick extreme
+      pts.push({ x: x0 + xW * (0.05 + r3 * 0.20), y: yFor(isUp ? c.high : c.low) });
+      // late consolidation
+      const cons = isUp
+        ? c.high - (c.high - c.close) * (0.4 + r4 * 0.35)
+        : c.low  + (c.close - c.low)  * (0.4 + r4 * 0.35);
+      pts.push({ x: x0 + xW * 0.28, y: yFor(cons) });
+    }
   }
-  // Final point: last candle close
-  pts.push({ x: xFor(candles.length - 1), y: yFor(candles[candles.length - 1].close) });
+  // Ensure final point lands exactly on the last close
+  pts.push({ x: xFor(candles.length - 1) + xW * 0.48, y: yFor(candles[candles.length - 1].close) });
 
-  // Draw the path with very tight Catmull-Rom-like tension so it looks
-  // organic but not artificially smooth. Use small quadratic steps between
-  // consecutive points to get the jagged-but-connected feel.
+  // Path builder — tight quadratic curves for that organic-but-not-silky feel
   function buildPath() {
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < pts.length; i++) {
       const prev = pts[i - 1], curr = pts[i];
-      // Tight tension: control point is only 18% of the way toward the next
-      const cpx = prev.x + (curr.x - prev.x) * 0.18;
-      const cpy = prev.y + (curr.y - prev.y) * 0.18;
+      const cpx = prev.x + (curr.x - prev.x) * 0.22;
+      const cpy = prev.y;           // horizontal control — keeps vertical moves sharp
       ctx.quadraticCurveTo(cpx, cpy, curr.x, curr.y);
     }
   }
 
-  const bottom = padT + plotH;
-  const firstPt = pts[0], lastPt = pts[pts.length - 1];
+  const bottom   = padT + plotH;
+  const firstPt  = pts[0];
+  const lastPt   = pts[pts.length - 1];
 
-  // Area fill — strong near line, completely transparent at bottom
+  // Area fill
   buildPath();
   ctx.lineTo(lastPt.x, bottom);
   ctx.lineTo(firstPt.x, bottom);
   ctx.closePath();
   const areaGrad = ctx.createLinearGradient(0, padT, 0, bottom);
-  areaGrad.addColorStop(0,   `rgba(${rgb},0.22)`);
-  areaGrad.addColorStop(0.4, `rgba(${rgb},0.08)`);
+  areaGrad.addColorStop(0,   `rgba(${rgb},0.20)`);
+  areaGrad.addColorStop(0.5, `rgba(${rgb},0.06)`);
   areaGrad.addColorStop(1,   `rgba(${rgb},0)`);
   ctx.fillStyle = areaGrad;
   ctx.fill();
 
-  // Wide soft glow pass
+  // Glow pass
   ctx.save();
   buildPath();
   ctx.shadowColor = `rgba(${rgb},0.55)`;
-  ctx.shadowBlur = 12;
+  ctx.shadowBlur  = 10;
   ctx.strokeStyle = `rgba(${rgb},0.5)`;
-  ctx.lineWidth = 3.5;
-  ctx.lineJoin = "round";
-  ctx.lineCap = "round";
+  ctx.lineWidth   = 3.5;
+  ctx.lineJoin = "round"; ctx.lineCap = "round";
   ctx.stroke();
   ctx.restore();
 
-  // Crisp core line — slightly thinner than glow so the glow bleeds visibly
+  // Crisp core line
   buildPath();
   ctx.strokeStyle = color;
-  ctx.lineWidth = 1.5;
-  ctx.lineJoin = "round";
-  ctx.lineCap = "round";
+  ctx.lineWidth   = 1.5;
+  ctx.lineJoin = "round"; ctx.lineCap = "round";
   ctx.stroke();
 
   drawPulseDot(lastPt.x, lastPt.y);
