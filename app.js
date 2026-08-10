@@ -369,7 +369,62 @@ function subscribeMarket() {
   });
 }
 
+// ---------- single-tab leader election for tick advancement ----------
+// Only one tab drives the price engine. Others just read via onSnapshot.
+// This eliminates the flood of failed-precondition 400s from racing transactions.
+const LEADER_KEY = "plty_tick_leader";
+const LEADER_TTL = 8000; // ms — if leader goes silent, another tab takes over
+let isTickLeader = false;
+let leaderHeartbeat = null;
+
+function tryBecomeLeader() {
+  const now = Date.now();
+  const existing = localStorage.getItem(LEADER_KEY);
+  if (existing) {
+    const { ts } = JSON.parse(existing);
+    if (now - ts < LEADER_TTL) return false; // another tab is alive
+  }
+  localStorage.setItem(LEADER_KEY, JSON.stringify({ ts: now }));
+  return true;
+}
+
+function startLeaderElection() {
+  // Try immediately, then check every 4s
+  isTickLeader = tryBecomeLeader();
+  if (isTickLeader) {
+    leaderHeartbeat = setInterval(() => {
+      localStorage.setItem(LEADER_KEY, JSON.stringify({ ts: Date.now() }));
+    }, 3000);
+  } else {
+    // Poll to take over if leader disappears
+    setInterval(() => {
+      if (!isTickLeader) {
+        isTickLeader = tryBecomeLeader();
+        if (isTickLeader) {
+          leaderHeartbeat = setInterval(() => {
+            localStorage.setItem(LEADER_KEY, JSON.stringify({ ts: Date.now() }));
+          }, 3000);
+        }
+      }
+    }, 5000);
+  }
+}
+
+window.addEventListener("beforeunload", () => {
+  if (isTickLeader) localStorage.removeItem(LEADER_KEY);
+});
+
+// Prevent leader from running while the tab is hidden (saves writes, reduces conflicts)
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && isTickLeader) {
+    localStorage.removeItem(LEADER_KEY);
+    isTickLeader = false;
+    clearInterval(leaderHeartbeat);
+  }
+});
+
 async function advanceTick() {
+  if (!isTickLeader) return; // only the elected tab writes ticks
   const nowTick = Math.floor(Date.now() / TICK_MS);
   try {
     await runTransaction(db, async (tx) => {
@@ -390,7 +445,7 @@ async function advanceTick() {
         lastTickIndex: tickIdx
       });
     });
-  } catch (e) { /* contention fine */ }
+  } catch (e) { /* contention is harmless — market doc is already ahead */ }
 
   try {
     const freshSnap = await getDoc(marketRef);
@@ -403,6 +458,7 @@ async function advanceTick() {
 }
 
 function startTickLoop() {
+  startLeaderElection();
   advanceTick();
   setInterval(advanceTick, TICK_MS);
 }
@@ -1461,16 +1517,21 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
       });
     } else {
       const priceNow = marketSnap.data().price;
-      const coinAmount = sellAll ? holdings : usdAmount / priceNow;
-      if (coinAmount > holdings + 1e-9) throw new Error("Not enough $PLTY held.");
+      // Re-read holdings from the transaction snapshot (not from cached currentUser)
+      // so stale transaction retries see the real value and don't sell dust/zero.
+      const liveHoldings = u.holdings || 0;
+      if (liveHoldings < 1e-9) throw new Error("No $PLTY held.");
+      const coinAmount = sellAll ? liveHoldings : Math.min(usdAmount / priceNow, liveHoldings);
+      if (coinAmount < 1e-9) throw new Error("Amount too small.");
+      if (coinAmount > liveHoldings + 1e-9) throw new Error("Not enough $PLTY held.");
       const usdReceived = coinAmount * priceNow;
       const impact = Math.min(0.25, (usdReceived / marketCapNow) * IMPACT_FACTOR);
       price = priceNow * (1 - impact);
       balance += usdReceived;
-      // Reduce costBasis proportionally
-      const sellRatio = holdings > 0 ? coinAmount / holdings : 0;
+      // Reduce costBasis proportionally using live server value
+      const sellRatio = liveHoldings > 0 ? coinAmount / liveHoldings : 0;
       costBasis = costBasis * (1 - sellRatio);
-      holdings -= coinAmount;
+      holdings = liveHoldings - coinAmount;
       if (holdings < 1e-9) { holdings = 0; costBasis = 0; }
       tx.update(marketRef, { price, marketCap: price * TOTAL_SUPPLY });
       tx.update(uref, { balance, holdings, costBasis });
@@ -1557,20 +1618,23 @@ async function checkTriggers() {
     reason = `Take-profit triggered at ${fmtPrice(price)}`;
   }
 
-  if (shouldSell) {
-    triggersExecuting = true;
-    // Clear triggers so they don't re-fire
-    stopLossPrice = null;
-    takeProfitPrice = null;
-    saveTriggers();
-    renderTriggerStatus();
-    try {
-      const usdVal = holdings * price;
-      await executeTrade("sell", usdVal, true, "", true);
-      toast(`🤖 ${reason} — sold all PLTY`, false);
-    } catch (e) {
-      toast("Trigger failed: " + e.message, true);
-    }
+  if (!shouldSell) return;
+
+  // Set flag SYNCHRONOUSLY before any await so concurrent snapshot callbacks
+  // can't slip through and trigger a second sell while the first is in-flight.
+  triggersExecuting = true;
+  stopLossPrice = null;
+  takeProfitPrice = null;
+  saveTriggers();
+  renderTriggerStatus();
+
+  try {
+    await executeTrade("sell", 0, true, "", true); // sellAll=true, amount ignored
+    toast(`🤖 ${reason} — sold all PLTY`, false);
+  } catch (e) {
+    toast("Trigger failed: " + e.message, true);
+    // On failure, re-enable so user can retry manually
+  } finally {
     triggersExecuting = false;
   }
 }
