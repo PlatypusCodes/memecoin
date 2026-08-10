@@ -12,7 +12,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot,
-  collection, query, orderBy, limit, limitToLast,
+  collection, query, orderBy, limit,
   runTransaction, serverTimestamp, getDocs, where
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 
@@ -43,7 +43,6 @@ const DEFAULT_AVATAR = "https://avatars.githubusercontent.com/u/298894342?s=60&v
 const MAX_TICK_HISTORY = 2000;
 
 const marketRef = doc(db, "market", "state");
-const ticksCol = collection(db, "ticks");
 const tradesCol = collection(db, "trades");
 const usersCol = collection(db, "users");
 
@@ -326,7 +325,6 @@ function boot() {
   showApp();
   renderProfile();
   subscribeMarket();
-  subscribeTicks();
   subscribeTrades();
   startTickLoop();
   resizeCanvas();
@@ -342,22 +340,34 @@ function boot() {
 // MARKET STATE
 // ===========================================================
 
+let _marketSeeded = false;
+
 function subscribeMarket() {
   onSnapshot(marketRef, (snap) => {
     if (!snap.exists()) {
-      // Doc doesn't exist yet (fresh project) — render with defaults so the
-      // UI isn't blank, and let the tick loop create it on the next tick.
+      // Fresh project -- render defaults, tick loop will create the doc soon.
       renderTopStats();
       renderVial();
       renderWallet();
       return;
     }
     marketState = snap.data();
-    // Keep local tick cache in sync so advanceTick steps from the right place
-    if (marketState.lastTickIndex && marketState.lastTickIndex > _lastKnownTickIdx) {
+
+    // On first real snapshot: seed local price state from Firestore and
+    // rebuild the client-side tick history so the chart fills in.
+    // NOTE: don't gate on lastTickIndex being truthy -- it can legitimately
+    // be 0 on a brand-new project, and 0 is falsy in JS.
+    if (!_marketSeeded) {
+      _marketSeeded     = true;
+      _lastKnownTickIdx = marketState.lastTickIndex || 0;
+      _lastKnownPrice   = marketState.price || STARTING_PRICE;
+      rebuildLocalTicks();
+    } else if (marketState.lastTickIndex > _lastKnownTickIdx) {
+      // Another tab wrote a newer state -- fast-forward local cache to match.
       _lastKnownTickIdx = marketState.lastTickIndex;
       _lastKnownPrice   = marketState.price;
     }
+
     renderTopStats();
     renderVial();
     renderWallet();
@@ -369,47 +379,138 @@ function subscribeMarket() {
 }
 
 // ---------- tick engine ----------
-// Each tab reads the current price+tickIdx from Firestore, steps it forward
-// by however many ticks have elapsed (usually 1), then writes back with a plain
-// updateDoc — no transaction, no currentDocument constraint, no 400s.
-// Multiple tabs writing the same tick is fine: same seed → same price.
+// KEY OPTIMISATION — three changes to slash Firestore usage:
+//
+// 1. LEADER ELECTION: only one tab per browser writes to Firestore.
+//    Others compute price locally and listen for market snapshots.
+//
+// 2. NO TICK COLLECTION: price history is fully deterministic
+//    (same seed + tickIdx => same price), so we derive it client-side
+//    instead of storing every tick. Eliminates all ticks/ writes and reads.
+//
+// 3. THROTTLED MARKET WRITES: the leader only writes marketRef every
+//    MARKET_WRITE_EVERY ticks (~15s) instead of every 3s. Local state
+//    advances every tick regardless -- no visible speed change.
 
 const TICK_JITTER = Math.floor(Math.random() * 800);
+const MARKET_WRITE_EVERY = 5; // write marketRef every N ticks (~15s at 3s/tick)
 
-// Local cache of the last known market state so we don't re-read Firestore
-// on every tick — we update it from the onSnapshot listener instead.
-let _lastKnownPrice = STARTING_PRICE;
+// --- Leader election via localStorage ---
+const LEADER_KEY   = "plty_leader_ts";
+const LEADER_TTL   = 8000; // ms -- leader must refresh within this window
+const LEADER_RENEW = 4000; // ms -- how often the leader refreshes its claim
+
+let _isLeader = false;
+
+function tryClaimLeader() {
+  const now = Date.now();
+  const last = parseInt(localStorage.getItem(LEADER_KEY) || "0", 10);
+  if (now - last > LEADER_TTL) {
+    localStorage.setItem(LEADER_KEY, String(now));
+    _isLeader = true;
+  }
+}
+function renewLeader() {
+  if (_isLeader) localStorage.setItem(LEADER_KEY, String(Date.now()));
+}
+setInterval(renewLeader, LEADER_RENEW);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { _isLeader = false; }
+  else { tryClaimLeader(); }
+});
+window.addEventListener("beforeunload", () => {
+  if (_isLeader) localStorage.removeItem(LEADER_KEY);
+});
+
+// --- Local price state (all tabs keep this in sync) ---
+let _lastKnownPrice   = STARTING_PRICE;
 let _lastKnownTickIdx = 0;
+let _ticksSinceWrite  = 0;
 
-async function advanceTick() {
-  if (document.hidden) return;
+// Rebuild client-side tick array from the deterministic engine.
+// Called once after the first marketRef snapshot seeds _lastKnownTickIdx.
+function rebuildLocalTicks() {
+  const nowTick = Math.floor(Date.now() / TICK_MS);
 
+  // Walk back at most MAX_TICK_HISTORY ticks from the current tick.
+  // We can't start from 0 -- nowTick is ~580M and the loop would freeze the browser.
+  // Instead fast-forward a seed price to startIdx using a shortcut, then step normally.
+  const startIdx = Math.max(0, nowTick - MAX_TICK_HISTORY + 1);
+
+  // Fast-forward price to startIdx.
+  // stepPrice is cheap per call but we can't call it 580M times either,
+  // so we use the known anchor from Firestore (_lastKnownPrice at _lastKnownTickIdx)
+  // and only walk the short gap between that anchor and startIdx if needed.
+  let p;
+  if (_lastKnownTickIdx >= startIdx) {
+    // Anchor is already past startIdx -- step back isn't possible, so just
+    // re-derive forward from the anchor.
+    p = _lastKnownPrice;
+    const newTicks = [];
+    for (let i = _lastKnownTickIdx + 1; i <= nowTick; i++) {
+      p = stepPrice(p, i);
+      newTicks.push({ price: p, ts: i * TICK_MS });
+    }
+    // Prepend what we have in ticks already up to anchor
+    ticks = [...ticks.slice(-(MAX_TICK_HISTORY - newTicks.length)), ...newTicks];
+    return;
+  } else {
+    // Walk forward from anchor to startIdx, then collect from startIdx to nowTick.
+    p = _lastKnownPrice;
+    for (let i = _lastKnownTickIdx + 1; i < startIdx; i++) {
+      p = stepPrice(p, i);
+    }
+  }
+
+  const newTicks = [];
+  for (let i = startIdx; i <= nowTick; i++) {
+    p = stepPrice(p, i);
+    newTicks.push({ price: p, ts: i * TICK_MS });
+  }
+  ticks = newTicks;
+}
+
+function advanceLocalTick() {
   const nowTick = Math.floor(Date.now() / TICK_MS);
   const lastIdx = _lastKnownTickIdx || nowTick;
-  if (lastIdx >= nowTick) return; // already up to date
+  if (lastIdx >= nowTick) return;
 
-  // Step price forward from last known position (always a tiny number of steps)
-  let price = _lastKnownPrice;
   const steps = Math.min(nowTick - lastIdx, 5);
+  let price = _lastKnownPrice;
   for (let i = 1; i <= steps; i++) {
-    price = stepPrice(price, lastIdx + i);
+    const idx = lastIdx + i;
+    price = stepPrice(price, idx);
+    ticks.push({ price, ts: idx * TICK_MS });
   }
-  const tickIdx = lastIdx + steps;
+  if (ticks.length > MAX_TICK_HISTORY) ticks = ticks.slice(-MAX_TICK_HISTORY);
 
-  // Update local cache immediately so next call doesn't double-step
-  _lastKnownPrice = price;
-  _lastKnownTickIdx = tickIdx;
+  _lastKnownPrice   = price;
+  _lastKnownTickIdx = lastIdx + steps;
 
-  // Write tick doc (idempotent setDoc — no conflict possible)
-  try {
-    await setDoc(doc(ticksCol, `t_${nowTick}`), { price, ts: nowTick * TICK_MS });
-  } catch (_) {}
+  marketState.price         = price;
+  marketState.marketCap     = price * TOTAL_SUPPLY;
+  marketState.lastTickIndex = _lastKnownTickIdx;
+  renderTopStats();
+  renderVial();
+  renderWallet();
+  renderSheetConvert();
+  refreshSheetIfMaxActive();
+  checkTriggers();
+  checkAlerts();
+  drawChart();
+}
 
-  // Update market state — plain write, no optimistic lock, no 400s
+async function maybeWriteMarket() {
+  if (!_isLeader) return;
+  _ticksSinceWrite++;
+  if (_ticksSinceWrite < MARKET_WRITE_EVERY) return;
+  _ticksSinceWrite = 0;
+
+  const price   = _lastKnownPrice;
+  const tickIdx = _lastKnownTickIdx;
   try {
     await updateDoc(marketRef, { price, marketCap: price * TOTAL_SUPPLY, lastTickIndex: tickIdx });
   } catch (_) {
-    // Doc may not exist yet on a fresh project
     try {
       await setDoc(marketRef, {
         price, marketCap: price * TOTAL_SUPPLY,
@@ -419,23 +520,22 @@ async function advanceTick() {
   }
 }
 
+function advanceTick() {
+  if (document.hidden) return;
+  advanceLocalTick();
+  maybeWriteMarket();
+}
+
 function startTickLoop() {
+  tryClaimLeader();
   setTimeout(() => {
     advanceTick();
     setInterval(advanceTick, TICK_MS);
   }, TICK_JITTER);
 }
 
-// ===========================================================
-// TICKS
-// ===========================================================
-function subscribeTicks() {
-  const q = query(ticksCol, orderBy("ts", "asc"), limitToLast(MAX_TICK_HISTORY));
-  onSnapshot(q, (snap) => {
-    ticks = snap.docs.map(d => d.data());
-    drawChart();
-  });
-}
+// TICKS: no longer a Firestore collection -- derived client-side
+// from the deterministic price engine. See rebuildLocalTicks() and advanceLocalTick().
 
 // ===========================================================
 // TRADES
