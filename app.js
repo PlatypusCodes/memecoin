@@ -113,6 +113,28 @@ let alertAboveFired = false;
 let alertBelowFired = false;
 let triggersExecuting = false;
 
+// Firestore quota fallback — when reads are exhausted, sell is cached locally
+let _firestoreQuotaExceeded = false;
+let _pendingSellQueue = JSON.parse(localStorage.getItem("plty_pending_sells") || "[]");
+
+function _savePendingSells() {
+  try { localStorage.setItem("plty_pending_sells", JSON.stringify(_pendingSellQueue)); } catch (_) {}
+}
+
+// Try to flush pending sells from the queue whenever Firestore might be available again
+async function _flushPendingSells() {
+  if (!_pendingSellQueue.length || !currentUser) return;
+  const item = _pendingSellQueue[0];
+  try {
+    await executeTrade("sell", item.usdAmount, item.sellAll, item.callingIt || "", true);
+    _pendingSellQueue.shift();
+    _savePendingSells();
+    if (_pendingSellQueue.length) setTimeout(_flushPendingSells, 3000);
+    else { _firestoreQuotaExceeded = false; toast("Queued sell executed ✓", false); }
+  } catch (_) {}
+}
+setInterval(_flushPendingSells, 30000);
+
 // Quick trade buttons config
 const DEFAULT_QUICK_BUYS  = [25, 100, 500];    // USD amounts
 const DEFAULT_QUICK_SELLS = [25, 50, 100];      // % of holdings
@@ -776,7 +798,8 @@ function getAvatarImg(url) {
   const img = new Image();
   img.crossOrigin = "anonymous";
   img.src = key;
-  img.onerror = () => { img.src = DEFAULT_AVATAR; };
+  img.onerror = () => { img.src = DEFAULT_AVATAR; if (booted) drawChart(); };
+  img.onload = () => { if (booted) drawChart(); };
   avatarImgCache.set(key, img);
   return img;
 }
@@ -972,7 +995,7 @@ document.querySelectorAll(".ct-btn").forEach(btn => {
 });
 
 const TF_CONFIG = {
-  live: { bucketMs: 10 * TICK_MS, maxCandles: 80 },
+  live: { bucketMs: TICK_MS, maxCandles: 80 },
   "1m": { bucketMs: 60 * 1000, maxCandles: 80 },
   "5m": { bucketMs: 5 * 60 * 1000, maxCandles: 80 },
   "10m": { bucketMs: 10 * 60 * 1000, maxCandles: 80 },
@@ -1641,60 +1664,102 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
   const uref = doc(usersCol, currentUser.uid);
   const IMPACT_FACTOR = 2.2;
 
-  await runTransaction(db, async (tx) => {
-    const [marketSnap, userSnap] = await Promise.all([tx.get(marketRef), tx.get(uref)]);
-    if (!marketSnap.exists() || !userSnap.exists()) throw new Error("Not ready, try again.");
-    let price = marketSnap.data().price;
-    const marketCapNow = price * TOTAL_SUPPLY;
-    const u = userSnap.data();
-    let balance = u.balance || 0;
-    let holdings = u.holdings || 0;
-    let costBasis = u.costBasis || 0;
+  try {
+    await runTransaction(db, async (tx) => {
+      const [marketSnap, userSnap] = await Promise.all([tx.get(marketRef), tx.get(uref)]);
+      if (!marketSnap.exists() || !userSnap.exists()) throw new Error("Not ready, try again.");
+      let price = marketSnap.data().price;
+      const marketCapNow = price * TOTAL_SUPPLY;
+      const u = userSnap.data();
+      let balance = u.balance || 0;
+      let holdings = u.holdings || 0;
+      let costBasis = u.costBasis || 0;
 
-    if (mode === "buy") {
-      if (usdAmount > balance + 1e-9) throw new Error("Not enough cash.");
-      const coinAmount = usdAmount / price;
-      const impact = Math.min(0.25, (usdAmount / marketCapNow) * IMPACT_FACTOR);
-      price = price * (1 + impact);
-      balance -= usdAmount;
-      costBasis += usdAmount; // track total cost for P&L
-      holdings += coinAmount;
-      tx.update(marketRef, { price, marketCap: price * TOTAL_SUPPLY });
-      tx.update(uref, { balance, holdings, costBasis });
-      const tradeDoc = doc(tradesCol);
-      tx.set(tradeDoc, {
-        uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
-        type: "buy", usdAmount, coinAmount, price, callingIt: callingIt || "",
-        timestamp: serverTimestamp()
-      });
-    } else {
-      const priceNow = marketSnap.data().price;
-      // Re-read holdings from the transaction snapshot (not from cached currentUser)
-      // so stale transaction retries see the real value and don't sell dust/zero.
-      const liveHoldings = u.holdings || 0;
-      if (liveHoldings < 1e-9) throw new Error("No $PLTY held.");
-      const coinAmount = sellAll ? liveHoldings : Math.min(usdAmount / priceNow, liveHoldings);
-      if (coinAmount < 1e-9) throw new Error("Amount too small.");
-      if (coinAmount > liveHoldings + 1e-9) throw new Error("Not enough $PLTY held.");
-      const usdReceived = coinAmount * priceNow;
-      const impact = Math.min(0.25, (usdReceived / marketCapNow) * IMPACT_FACTOR);
-      price = priceNow * (1 - impact);
-      balance += usdReceived;
-      // Reduce costBasis proportionally using live server value
-      const sellRatio = liveHoldings > 0 ? coinAmount / liveHoldings : 0;
-      costBasis = costBasis * (1 - sellRatio);
-      holdings = liveHoldings - coinAmount;
-      if (holdings < 1e-9) { holdings = 0; costBasis = 0; }
-      tx.update(marketRef, { price, marketCap: price * TOTAL_SUPPLY });
-      tx.update(uref, { balance, holdings, costBasis });
-      const tradeDoc = doc(tradesCol);
-      tx.set(tradeDoc, {
-        uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
-        type: "sell", usdAmount: usdReceived, coinAmount, price, callingIt: callingIt || "",
-        timestamp: serverTimestamp()
-      });
+      if (mode === "buy") {
+        if (usdAmount > balance + 1e-9) throw new Error("Not enough cash.");
+        const coinAmount = usdAmount / price;
+        const impact = Math.min(0.25, (usdAmount / marketCapNow) * IMPACT_FACTOR);
+        price = price * (1 + impact);
+        balance -= usdAmount;
+        costBasis += usdAmount; // track total cost for P&L
+        holdings += coinAmount;
+        tx.update(marketRef, { price, marketCap: price * TOTAL_SUPPLY });
+        tx.update(uref, { balance, holdings, costBasis });
+        const tradeDoc = doc(tradesCol);
+        tx.set(tradeDoc, {
+          uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
+          type: "buy", usdAmount, coinAmount, price, callingIt: callingIt || "",
+          timestamp: serverTimestamp()
+        });
+      } else {
+        const priceNow = marketSnap.data().price;
+        // Re-read holdings from the transaction snapshot (not from cached currentUser)
+        // so stale transaction retries see the real value and don't sell dust/zero.
+        const liveHoldings = u.holdings || 0;
+        if (liveHoldings < 1e-9) throw new Error("No $PLTY held.");
+        const coinAmount = sellAll ? liveHoldings : Math.min(usdAmount / priceNow, liveHoldings);
+        if (coinAmount < 1e-9) throw new Error("Amount too small.");
+        if (coinAmount > liveHoldings + 1e-9) throw new Error("Not enough $PLTY held.");
+        const usdReceived = coinAmount * priceNow;
+        const impact = Math.min(0.25, (usdReceived / marketCapNow) * IMPACT_FACTOR);
+        price = priceNow * (1 - impact);
+        balance += usdReceived;
+        // Reduce costBasis proportionally using live server value
+        const sellRatio = liveHoldings > 0 ? coinAmount / liveHoldings : 0;
+        costBasis = costBasis * (1 - sellRatio);
+        holdings = liveHoldings - coinAmount;
+        if (holdings < 1e-9) { holdings = 0; costBasis = 0; }
+        tx.update(marketRef, { price, marketCap: price * TOTAL_SUPPLY });
+        tx.update(uref, { balance, holdings, costBasis });
+        const tradeDoc = doc(tradesCol);
+        tx.set(tradeDoc, {
+          uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
+          type: "sell", usdAmount: usdReceived, coinAmount, price, callingIt: callingIt || "",
+          timestamp: serverTimestamp()
+        });
+      }
+    });
+    // Successful Firestore transaction — clear quota flag
+    _firestoreQuotaExceeded = false;
+  } catch (err) {
+    // Detect quota-exceeded / resource-exhausted errors from Firestore
+    const isQuotaErr = err.code === "resource-exhausted" ||
+      (err.message && (err.message.includes("Quota exceeded") || err.message.includes("resource-exhausted") || err.message.includes("RESOURCE_EXHAUSTED")));
+
+    // For sells: apply locally and queue for retry so the user isn't trapped
+    if (isQuotaErr && mode === "sell") {
+      _firestoreQuotaExceeded = true;
+      _executeLocalSell(usdAmount, sellAll, callingIt);
+      return; // local sell succeeded — don't throw
     }
-  });
+
+    throw err; // re-throw for buys and non-quota errors
+  }
+}
+
+// Apply a sell locally using cached state when Firestore is unavailable
+function _executeLocalSell(usdAmount, sellAll, callingIt) {
+  const price = marketState.price || STARTING_PRICE;
+  const liveHoldings = currentUser.holdings || 0;
+  if (liveHoldings < 1e-9) throw new Error("No $PLTY held.");
+  const coinAmount = sellAll ? liveHoldings : Math.min(usdAmount / price, liveHoldings);
+  if (coinAmount < 1e-9) throw new Error("Amount too small.");
+  const usdReceived = coinAmount * price;
+
+  // Update local currentUser so the UI reflects the sell immediately
+  const sellRatio = liveHoldings > 0 ? coinAmount / liveHoldings : 0;
+  currentUser.holdings = Math.max(0, liveHoldings - coinAmount);
+  currentUser.balance = (currentUser.balance || 0) + usdReceived;
+  currentUser.costBasis = (currentUser.costBasis || 0) * (1 - sellRatio);
+  if (currentUser.holdings < 1e-9) { currentUser.holdings = 0; currentUser.costBasis = 0; }
+
+  // Queue this sell so it can be committed to Firestore when quota resets
+  _pendingSellQueue.push({ usdAmount: usdReceived, sellAll: false, callingIt, ts: Date.now() });
+  _savePendingSells();
+
+  // Re-render wallet and show a warning
+  renderWallet();
+  toast(`⚠ Sold locally (quota limit) — will sync when quota resets`, false);
 }
 
 // ===========================================================
