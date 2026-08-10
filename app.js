@@ -81,6 +81,7 @@ let ticks = [];            // ascending by ts
 let trades = [];           // descending by ts (most recent first)
 let traderMap = new Map(); // uid -> {username, avatarUrl, buys, sells, volume}
 let activeTF = "live";
+let chartType = localStorage.getItem("plty_chart_type") || "candles";
 let hoverPoint = null;
 let sheetMode = "buy";
 let sheetAmount = "";
@@ -562,8 +563,21 @@ document.querySelectorAll(".tf-btn").forEach(btn => {
   });
 });
 
+document.querySelectorAll(".ct-btn").forEach(btn => {
+  btn.classList.toggle("active", btn.dataset.ct === chartType);
+});
+document.querySelectorAll(".ct-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".ct-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    chartType = btn.dataset.ct;
+    localStorage.setItem("plty_chart_type", chartType);
+    drawChart();
+  });
+});
+
 const TF_CONFIG = {
-  live: { bucketMs: TICK_MS, maxCandles: 90 },
+  live: { bucketMs: 4 * TICK_MS, maxCandles: 100 },
   "1m": { bucketMs: 60 * 1000, maxCandles: 80 },
   "5m": { bucketMs: 5 * 60 * 1000, maxCandles: 80 },
   "10m": { bucketMs: 10 * 60 * 1000, maxCandles: 80 },
@@ -646,31 +660,12 @@ function drawChart() {
     ctx.fillText(fmtPrice(val), w - padR + 10, y + 3);
   }
 
-  // candles
-  const bodyW = Math.max(2, xStep * 0.6);
-  candles.forEach((c, i) => {
-    const x = xFor(i);
-    const up = c.close >= c.open;
-    const color = up ? (cssVar("--toxic") || "#7cff6b") : (cssVar("--venom") || "#ff3d6e");
-    ctx.strokeStyle = color;
-    ctx.fillStyle = color;
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(x, yFor(c.high));
-    ctx.lineTo(x, yFor(c.low));
-    ctx.stroke();
-    const yOpen = yFor(c.open), yClose = yFor(c.close);
-    const top = Math.min(yOpen, yClose);
-    const bh = Math.max(1.5, Math.abs(yClose - yOpen));
-    ctx.fillRect(x - bodyW / 2, top, bodyW, bh);
-  });
-
-  // live pulse dot on last candle
-  const last = candles[candles.length - 1];
-  const lx = xFor(candles.length - 1);
-  const ly = yFor(last.close);
-  ctx.fillStyle = cssVar("--bill") || "#ffc94d";
-  ctx.beginPath(); ctx.arc(lx, ly, 3.5, 0, Math.PI * 2); ctx.fill();
+  // price series
+  if (chartType === "line") {
+    drawLineSeries(candles, xFor, yFor, padT, plotH);
+  } else {
+    drawCandleSeries(candles, xFor, yFor, xStep);
+  }
 
   // x-axis time labels (first, middle, last)
   ctx.fillStyle = cssVar("--text-faint") || "#5a6b60";
@@ -687,6 +682,179 @@ function drawChart() {
 
   drawTradeMarkers();
   drawHoverTooltip();
+}
+
+// ---------- realistic candlestick renderer ----------
+function drawCandleSeries(candles, xFor, yFor, xStep) {
+  const bodyW = Math.max(3, Math.min(26, xStep * 0.62));
+  const toxic = cssVar("--toxic") || "#7cff6b";
+  const venom = cssVar("--venom") || "#ff3d6e";
+  const toxicRgb = "124,255,107";
+  const venomRgb = "255,61,110";
+
+  candles.forEach((c, i) => {
+    const x = xFor(i);
+    const up = c.close >= c.open;
+    const rgb = up ? toxicRgb : venomRgb;
+    const color = up ? toxic : venom;
+
+    const yHigh = yFor(c.high), yLow = yFor(c.low);
+    const yOpen = yFor(c.open), yClose = yFor(c.close);
+    const bodyTop = Math.min(yOpen, yClose);
+    const bodyH = Math.max(1.6, Math.abs(yClose - yOpen));
+    const bodyBottom = bodyTop + bodyH;
+    const r = Math.min(2.5, bodyW / 4);
+
+    // faint vertical glow behind the whole candle for depth
+    ctx.save();
+    ctx.shadowColor = `rgba(${rgb},0.35)`;
+    ctx.shadowBlur = 6;
+
+    // upper wick (high -> body top)
+    ctx.strokeStyle = `rgba(${rgb},0.85)`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, yHigh);
+    ctx.lineTo(x, bodyTop);
+    ctx.stroke();
+
+    // lower wick (body bottom -> low)
+    ctx.beginPath();
+    ctx.moveTo(x, bodyBottom);
+    ctx.lineTo(x, yLow);
+    ctx.stroke();
+    ctx.restore();
+
+    // body — vertical gradient fill for a subtle 3D/glass feel
+    const grad = ctx.createLinearGradient(0, bodyTop, 0, bodyBottom);
+    if (up) {
+      grad.addColorStop(0, `rgba(${rgb},0.98)`);
+      grad.addColorStop(1, `rgba(${rgb},0.62)`);
+    } else {
+      grad.addColorStop(0, `rgba(${rgb},0.62)`);
+      grad.addColorStop(1, `rgba(${rgb},0.98)`);
+    }
+
+    ctx.save();
+    roundRectPath(ctx, x - bodyW / 2, bodyTop, bodyW, bodyH, r);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.strokeStyle = `rgba(${rgb},1)`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // subtle highlight sheen on the left edge of the body
+    ctx.save();
+    ctx.clip();
+    const sheen = ctx.createLinearGradient(x - bodyW / 2, 0, x - bodyW / 2 + bodyW * 0.35, 0);
+    sheen.addColorStop(0, "rgba(255,255,255,0.22)");
+    sheen.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = sheen;
+    ctx.fillRect(x - bodyW / 2, bodyTop, bodyW * 0.35, bodyH);
+    ctx.restore();
+    ctx.restore();
+  });
+
+  // live pulse dot on the last close
+  const last = candles[candles.length - 1];
+  const lx = xFor(candles.length - 1);
+  const ly = yFor(last.close);
+  drawPulseDot(lx, ly);
+}
+
+function roundRectPath(c, x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  c.beginPath();
+  c.moveTo(x + rr, y);
+  c.lineTo(x + w - rr, y);
+  c.arcTo(x + w, y, x + w, y + rr, rr);
+  c.lineTo(x + w, y + h - rr);
+  c.arcTo(x + w, y + h, x + w - rr, y + h, rr);
+  c.lineTo(x + rr, y + h);
+  c.arcTo(x, y + h, x, y + h - rr, rr);
+  c.lineTo(x, y + rr);
+  c.arcTo(x, y, x + rr, y, rr);
+  c.closePath();
+}
+
+// ---------- smooth glowing line renderer ----------
+function drawLineSeries(candles, xFor, yFor, padT, plotH) {
+  if (candles.length < 2) {
+    const p = candles[0];
+    const x = xFor(0), y = yFor(p.close);
+    drawPulseDot(x, y);
+    return;
+  }
+  const up = candles[candles.length - 1].close >= candles[0].close;
+  const color = up ? (cssVar("--toxic") || "#7cff6b") : (cssVar("--venom") || "#ff3d6e");
+  const rgb = up ? "124,255,107" : "255,61,110";
+
+  const pts = candles.map((c, i) => ({ x: xFor(i), y: yFor(c.close) }));
+
+  // smoothed path via quadratic curves through midpoints
+  function pathThrough() {
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length - 1; i++) {
+      const mx = (pts[i].x + pts[i + 1].x) / 2;
+      const my = (pts[i].y + pts[i + 1].y) / 2;
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+    }
+    const p = pts[pts.length - 1];
+    ctx.lineTo(p.x, p.y);
+  }
+
+  // area fill under the line
+  pathThrough();
+  const last = pts[pts.length - 1];
+  const first = pts[0];
+  const bottom = padT + plotH;
+  ctx.lineTo(last.x, bottom);
+  ctx.lineTo(first.x, bottom);
+  ctx.closePath();
+  const areaGrad = ctx.createLinearGradient(0, padT, 0, bottom);
+  areaGrad.addColorStop(0, `rgba(${rgb},0.28)`);
+  areaGrad.addColorStop(1, `rgba(${rgb},0)`);
+  ctx.fillStyle = areaGrad;
+  ctx.fill();
+
+  // glow pass
+  ctx.save();
+  pathThrough();
+  ctx.shadowColor = `rgba(${rgb},0.6)`;
+  ctx.shadowBlur = 10;
+  ctx.strokeStyle = `rgba(${rgb},0.9)`;
+  ctx.lineWidth = 2.2;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.stroke();
+  ctx.restore();
+
+  // crisp core line
+  pathThrough();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.6;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.stroke();
+
+  drawPulseDot(last.x, last.y);
+}
+
+function drawPulseDot(x, y) {
+  const bill = cssVar("--bill") || "#ffc94d";
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x, y, 7, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255,201,77,0.18)";
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+  ctx.fillStyle = bill;
+  ctx.shadowColor = bill;
+  ctx.shadowBlur = 8;
+  ctx.fill();
+  ctx.restore();
 }
 
 function drawTradeMarkers() {
@@ -750,7 +918,11 @@ function drawHoverTooltip() {
   tip.style.left = Math.min(hoverPoint.x + 14, chartLayout.w - 150) + "px";
   tip.style.top = Math.max(hoverPoint.y - 60, 4) + "px";
   const d = new Date(closest.ts);
-  tip.innerHTML = `${d.toLocaleTimeString()}<br/>O ${fmtPrice(closest.open)} H ${fmtPrice(closest.high)}<br/>L ${fmtPrice(closest.low)} C ${fmtPrice(closest.close)}`;
+  if (chartType === "line") {
+    tip.innerHTML = `${d.toLocaleTimeString()}<br/><strong>${fmtPrice(closest.close)}</strong>`;
+  } else {
+    tip.innerHTML = `${d.toLocaleTimeString()}<br/>O ${fmtPrice(closest.open)} H ${fmtPrice(closest.high)}<br/>L ${fmtPrice(closest.low)} C ${fmtPrice(closest.close)}`;
+  }
 }
 
 canvas.addEventListener("mousemove", (e) => {

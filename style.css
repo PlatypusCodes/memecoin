@@ -213,6 +213,17 @@ a{ color:inherit; }
 .venom-label{ position:absolute; bottom:3px; left:0; right:0; text-align:center; font-size:8px; letter-spacing:0.1em; color:rgba(0,0,0,0.55); font-weight:700; }
 
 .timeframes{ display:flex; gap:6px; flex-wrap:wrap; }
+.chart-controls{ display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+.chart-type-toggle{ display:flex; gap:3px; background:var(--surface-2); border:1px solid var(--border); border-radius:999px; padding:3px; flex-shrink:0; }
+.ct-btn{
+  display:flex; align-items:center; gap:6px;
+  background:transparent; border:none; color:var(--text-dim);
+  border-radius:999px; padding:6px 12px; font-size:11.5px; font-weight:600;
+  transition:all .15s;
+}
+.ct-btn:hover{ color:var(--text); }
+.ct-btn.active{ background:var(--surface-3); color:var(--toxic); }
+.ct-btn svg{ flex-shrink:0; }
 .tf-btn{
   background:var(--surface-2); border:1px solid var(--border); color:var(--text-dim);
   border-radius:999px; padding:6px 14px; font-size:12px; font-weight:600;
