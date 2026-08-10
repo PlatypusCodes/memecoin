@@ -311,6 +311,7 @@ function subscribeUser(uref) {
     renderProfile();
     renderWallet();
     renderSheetConvert();
+    refreshSheetIfMaxActive();
     checkTriggers();
   });
 }
@@ -349,6 +350,7 @@ function subscribeMarket() {
     renderVial();
     renderWallet();
     renderSheetConvert();
+    refreshSheetIfMaxActive();
     checkTriggers();
     checkAlerts();
   });
@@ -1357,6 +1359,21 @@ function applyMaxAmount(mode) {
     sheetSellAll = true;
     const usdVal = (currentUser?.holdings || 0) * price;
     sheetAmount = String(Math.floor(usdVal * 100) / 100);
+  }
+}
+
+function isSheetOpen() {
+  return !el("sheetBackdrop").classList.contains("hidden");
+}
+
+// Called on every market state update — if sheet is open and user picked Max,
+// refresh sell-max amount so it tracks the live coin price.
+function refreshSheetIfMaxActive() {
+  if (!isSheetOpen()) return;
+  if (sheetSellAll) {
+    applyMaxAmount("sell");
+    renderSheetAmount();
+    renderSheetConvert();
   }
 }
 
