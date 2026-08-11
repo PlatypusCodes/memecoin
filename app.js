@@ -628,7 +628,10 @@ function advanceTick() {
   // returns, instead of appearing frozen. Only the Firestore write is gated on
   // visibility (no point writing when no tab is actively watching).
   advanceLocalTick();
-  if (!document.hidden) maybeWriteMarket();
+  if (!document.hidden) {
+    maybeWriteMarket();
+    drawChart();
+  }
 }
 
 function startTickLoop() {
@@ -1144,7 +1147,15 @@ function cssVar(name) {
 function drawChart() {
   const cfg = TF_CONFIG[activeTF];
   const candles = buildCandles(cfg.bucketMs, cfg.maxCandles);
-  const w = canvas.clientWidth, h = canvas.clientHeight;
+  let w = canvas.clientWidth, h = canvas.clientHeight;
+  if (!w || !h) {
+    // Canvas not yet laid out — re-measure from parent and reschedule
+    const wrap = canvas.parentElement;
+    if (wrap) { w = wrap.clientWidth; h = wrap.clientHeight; }
+    if (!w || !h) return;
+    resizeCanvas();
+    return;
+  }
   ctx.clearRect(0, 0, w, h);
 
   el("chartEmpty").classList.toggle("hidden", candles.length > 0);
@@ -1388,7 +1399,7 @@ function drawTradeMarkers() {
   // inside the current window. Trades older than the visible range are clamped
   // to the leftmost candle instead of being dropped, so avatars keep showing up
   // on "Live"/"1m"/etc. even when no trade occurred in the last few minutes.
-  const visible = trades.filter(t => t.ts < lastTs).slice(0, 120);
+  const visible = trades.filter(t => t.ts >= firstTs && t.ts < lastTs).slice(0, 120);
 
   const bucketToIdx = new Map();
   candles.forEach((c, i) => bucketToIdx.set(c.ts, i));
@@ -1609,14 +1620,10 @@ canvas.addEventListener("touchmove", (e) => {
 }, { passive: false });
 canvas.addEventListener("touchend", () => { hoverPoint = null; el("chartTooltip").classList.add("hidden"); });
 
-// Safety redraw: fires if the tick loop somehow missed a cycle.
-// On the live timeframe, also advance local ticks so the chart always moves.
+// Safety redraw: ensures chart repaints even if the tick loop stalled.
+// Tick advancement is handled exclusively by advanceTick() / startTickLoop().
 setInterval(() => {
   if (!booted) return;
-  if (activeTF === "live") {
-    // Drive ticks forward even if the main loop stalled
-    try { advanceLocalTick(); } catch (e) { console.error("safety tick error:", e); }
-  }
   drawChart();
 }, 1000);
 
