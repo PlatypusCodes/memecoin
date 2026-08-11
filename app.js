@@ -500,7 +500,7 @@ window.addEventListener("beforeunload", () => {
 
 // --- Local price state (all tabs keep this in sync) ---
 let _lastKnownPrice   = STARTING_PRICE;
-let _lastKnownTickIdx = 0;
+let _lastKnownTickIdx = -1; // -1 = not yet seeded; set by rebuildLocalTicks or first advanceLocalTick
 let _ticksSinceWrite  = 0;
 
 // Rebuild client-side tick array from the deterministic engine.
@@ -548,7 +548,12 @@ function rebuildLocalTicks() {
 
 function advanceLocalTick() {
   const nowTick = Math.floor(Date.now() / TICK_MS);
-  const lastIdx = _lastKnownTickIdx || nowTick;
+  // If not yet seeded by Firestore snapshot, seed from wall clock now so ticks flow immediately.
+  if (_lastKnownTickIdx < 0) {
+    _lastKnownTickIdx = nowTick - 1; // will add exactly 1 tick below
+    _lastKnownPrice = marketState.price || STARTING_PRICE;
+  }
+  const lastIdx = _lastKnownTickIdx;
   if (lastIdx >= nowTick) return;
 
   const steps = Math.min(nowTick - lastIdx, 5);
@@ -597,9 +602,12 @@ async function maybeWriteMarket() {
 }
 
 function advanceTick() {
-  if (document.hidden) return;
+  // Always advance local ticks and redraw the chart — even when the tab is hidden.
+  // This keeps ticks[] current so the chart is already up-to-date when the user
+  // returns, instead of appearing frozen. Only the Firestore write is gated on
+  // visibility (no point writing when no tab is actively watching).
   advanceLocalTick();
-  maybeWriteMarket();
+  if (!document.hidden) maybeWriteMarket();
 }
 
 function startTickLoop() {
@@ -1518,7 +1526,8 @@ canvas.addEventListener("touchmove", (e) => {
 }, { passive: false });
 canvas.addEventListener("touchend", () => { hoverPoint = null; el("chartTooltip").classList.add("hidden"); });
 
-setInterval(() => { if (booted) drawChart(); }, 1500);
+// Safety redraw: fires if the tick loop somehow missed a cycle
+setInterval(() => { if (booted) drawChart(); }, 1000);
 
 // ===========================================================
 // TRADE SHEET
