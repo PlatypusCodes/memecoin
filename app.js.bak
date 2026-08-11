@@ -90,7 +90,6 @@ function stepPrice(price, tickIdx) {
 let currentUser = null;
 let marketState = { price: STARTING_PRICE, marketCap: STARTING_PRICE * TOTAL_SUPPLY, lastTickIndex: 0, priceOpen24h: STARTING_PRICE, historyAnchor: null };
 let ticks = [];
-let _ticksGen = 0; // incremented whenever ticks is reassigned (not just pushed to)
 let trades = [];
 let traderMap = new Map();
 let activeTF = "live";
@@ -677,7 +676,6 @@ function rebuildLocalTicks() {
     newTicks.push({ price: p, ts: i * TICK_MS });
   }
   ticks = newTicks;
-  _ticksGen++;
 
   // Update the live-tip vars so advanceLocalTick() doesn't re-walk the same range.
   if (newTicks.length) {
@@ -707,7 +705,7 @@ function advanceLocalTick() {
     price = stepPrice(price, idx);
     ticks.push({ price, ts: idx * TICK_MS });
   }
-  if (ticks.length > MAX_TICK_HISTORY) { ticks = ticks.slice(-MAX_TICK_HISTORY); _ticksGen++; }
+  if (ticks.length > MAX_TICK_HISTORY) ticks = ticks.slice(-MAX_TICK_HISTORY);
 
   _lastKnownPrice   = price;
   _lastKnownTickIdx = lastIdx + steps;
@@ -1269,18 +1267,16 @@ const TF_CONFIG = {
 // Candle cache — keyed on (activeTF, ticks.length) so we only rebuild when
 // the timeframe changes or new ticks have been pushed. Saves repeated O(n)
 // scans on every drawChart() call (safety interval + tick loop + snapshots).
-let _candleCache = { bucketMs: 0, maxCandles: 0, len: 0, gen: -1, candles: [] };
+let _candleCache = { bucketMs: 0, maxCandles: 0, len: 0, candles: [] };
 
 function buildCandles(bucketMs, maxCandles) {
   if (!ticks.length) return [];
-  // Cache key: bucketMs + maxCandles + ticks.length + _ticksGen.
-  // _ticksGen catches reassignments (slice/rebuild) where length stays the same
-  // but tick content changes — without it the cache returns stale candles after
-  // a history rebuild or MAX_TICK_HISTORY trim.
+  // Cache key: bucketMs + maxCandles (the actual build params) + ticks.length.
+  // Keying on activeTF was wrong: TF label and bucketMs can diverge, and two
+  // TFs that share a bucketMs would get each other's cached results.
   if (_candleCache.bucketMs === bucketMs &&
       _candleCache.maxCandles === maxCandles &&
-      _candleCache.len === ticks.length &&
-      _candleCache.gen === _ticksGen) {
+      _candleCache.len === ticks.length) {
     return _candleCache.candles;
   }
   const map = new Map();
@@ -1327,7 +1323,7 @@ function buildCandles(bucketMs, maxCandles) {
     }
   }
   const candles = arr.slice(-maxCandles);
-  _candleCache = { bucketMs, maxCandles, len: ticks.length, gen: _ticksGen, candles };
+  _candleCache = { bucketMs, maxCandles, len: ticks.length, candles };
   return candles;
 }
 
