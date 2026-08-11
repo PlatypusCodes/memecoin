@@ -399,9 +399,17 @@ function boot() {
   booted = true;
   showApp();
   renderProfile();
-  subscribeMarket();
-  subscribeTrades();
-  startTickLoop();
+
+  // IMPORTANT: size the canvas (and set its devicePixelRatio transform) BEFORE
+  // wiring up anything that can call drawChart(). subscribeMarket()/subscribeTrades()
+  // can fire synchronously from Firestore's local cache the instant they're
+  // registered -- if that happens before resizeCanvas() has run, drawChart() computes
+  // candle/avatar positions using the final full-size layout (canvas.clientWidth/Height)
+  // but paints them onto the canvas's default, untransformed 300x150 backing store.
+  // The result: the very first frame (grid, candles, and especially the avatar
+  // markers) is squished/misplaced, with no error thrown since nothing is actually
+  // invalid -- it's just drawn into the wrong-sized buffer. Sizing first eliminates
+  // that race entirely.
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);
   // Also watch the chart container directly -- flex layout changes don't always
@@ -409,6 +417,10 @@ function boot() {
   if (typeof ResizeObserver !== "undefined") {
     new ResizeObserver(() => resizeCanvas()).observe(canvas.parentElement);
   }
+
+  subscribeMarket();
+  subscribeTrades();
+  startTickLoop();
   loadTriggers();
   loadAlerts();
   setupReferral();
@@ -1144,6 +1156,15 @@ function resizeCanvas() {
   const wrap = canvas.parentElement;
   const dpr = window.devicePixelRatio || 1;
   const w = wrap.clientWidth, h = wrap.clientHeight;
+  if (w <= 0 || h <= 0) {
+    // Container isn't laid out yet (e.g. mid-transition from the auth gate,
+    // or a hidden ancestor). Don't touch the canvas's backing-store size --
+    // sizing it to 0 (or drawing into it) here is what produces a squished/
+    // misplaced first frame. Retry on the next animation frame instead of
+    // silently leaving a bad frame on screen.
+    requestAnimationFrame(resizeCanvas);
+    return;
+  }
   canvas.width = w * dpr;
   canvas.height = h * dpr;
   canvas.style.width = w + "px";
@@ -1157,9 +1178,10 @@ function cssVar(name) {
 }
 
 function drawChart() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (w <= 0 || h <= 0) return; // canvas not laid out yet -- resizeCanvas() will retry and redraw
   const cfg = TF_CONFIG[activeTF];
   const candles = buildCandles(cfg.bucketMs, cfg.maxCandles);
-  const w = canvas.clientWidth, h = canvas.clientHeight;
   ctx.clearRect(0, 0, w, h);
 
   el("chartEmpty").classList.toggle("hidden", candles.length > 0);
