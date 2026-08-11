@@ -483,6 +483,10 @@ function subscribeMarket() {
       const nowTick = Math.floor(Date.now() / TICK_MS);
       _lastKnownTickIdx = Math.min(marketState.lastTickIndex, nowTick);
       _lastKnownPrice   = marketState.price;
+      // Rebuild tick history so the chart fills in correctly.
+      // rebuildLocalTicksIfBehind() below won't fire because we just updated
+      // _lastKnownTickIdx to match marketState.lastTickIndex.
+      rebuildLocalTicks();
     }
 
     const safe = (fn) => { try { fn(); } catch (err) { console.error("market snapshot render error:", err); } };
@@ -502,12 +506,13 @@ function subscribeMarket() {
 // without this tab's local tick loop having produced those intermediate ticks,
 // backfill them so the "Live" candles don't show a gap/jump.
 function rebuildLocalTicksIfBehind() {
-  // Only rebuild if the market state says there are ticks we have not yet
-  // generated locally.  _lastKnownTickIdx is updated by both rebuildLocalTicks()
-  // and advanceLocalTick(), so it accurately reflects how far our ticks[] array
-  // reaches.  The previous check (nowTick * TICK_MS > lastTickTs) was always
-  // true and triggered a full 20 000-tick rebuild on every Firestore snapshot.
-  if (_marketSeeded && marketState.lastTickIndex > _lastKnownTickIdx) {
+  // Rebuild only when Firestore reports ticks we haven't generated locally yet,
+  // OR when our local array is suspiciously short (e.g. after a cache-key bug
+  // returned an empty result and ticks[] never got populated).
+  const nowTick = Math.floor(Date.now() / TICK_MS);
+  const expectedLen = Math.min(MAX_TICK_HISTORY, nowTick + 1);
+  const tooShort = ticks.length < Math.min(80, expectedLen); // at least 80 ticks for chart
+  if (_marketSeeded && (marketState.lastTickIndex > _lastKnownTickIdx || tooShort)) {
     rebuildLocalTicks();
   }
 }
@@ -1253,12 +1258,16 @@ const TF_CONFIG = {
 // Candle cache — keyed on (activeTF, ticks.length) so we only rebuild when
 // the timeframe changes or new ticks have been pushed. Saves repeated O(n)
 // scans on every drawChart() call (safety interval + tick loop + snapshots).
-let _candleCache = { tf: null, len: 0, candles: [] };
+let _candleCache = { bucketMs: 0, maxCandles: 0, len: 0, candles: [] };
 
 function buildCandles(bucketMs, maxCandles) {
   if (!ticks.length) return [];
-  // Return the cached result if nothing has changed.
-  if (_candleCache.tf === activeTF && _candleCache.len === ticks.length) {
+  // Cache key: bucketMs + maxCandles (the actual build params) + ticks.length.
+  // Keying on activeTF was wrong: TF label and bucketMs can diverge, and two
+  // TFs that share a bucketMs would get each other's cached results.
+  if (_candleCache.bucketMs === bucketMs &&
+      _candleCache.maxCandles === maxCandles &&
+      _candleCache.len === ticks.length) {
     return _candleCache.candles;
   }
   const map = new Map();
@@ -1305,7 +1314,7 @@ function buildCandles(bucketMs, maxCandles) {
     }
   }
   const candles = arr.slice(-maxCandles);
-  _candleCache = { tf: activeTF, len: ticks.length, candles };
+  _candleCache = { bucketMs, maxCandles, len: ticks.length, candles };
   return candles;
 }
 
