@@ -115,23 +115,43 @@ let triggersExecuting = false;
 
 // Firestore quota fallback — when reads are exhausted, sell is cached locally
 let _firestoreQuotaExceeded = false;
+let _lastTradeWasLocal = false; // set true when sell was applied locally due to quota
 let _pendingSellQueue = JSON.parse(localStorage.getItem("plty_pending_sells") || "[]");
 
 function _savePendingSells() {
   try { localStorage.setItem("plty_pending_sells", JSON.stringify(_pendingSellQueue)); } catch (_) {}
 }
 
-// Try to flush pending sells from the queue whenever Firestore might be available again
+// Try to flush pending sells from the queue whenever Firestore might be available again.
+// We write directly (no transaction read) because the local sell already updated currentUser —
+// Firestore still has the pre-sell holdings and a transaction read would see those stale values.
 async function _flushPendingSells() {
   if (!_pendingSellQueue.length || !currentUser) return;
   const item = _pendingSellQueue[0];
   try {
-    await executeTrade("sell", item.usdAmount, item.sellAll, item.callingIt || "", true);
+    const uref = doc(usersCol, currentUser.uid);
+    const price = marketState.price || STARTING_PRICE;
+    const usdReceived = item.coinAmount ? item.coinAmount * price : item.usdAmount;
+    // Write the locally-computed end state directly — no reads needed
+    await updateDoc(uref, {
+      balance:  currentUser.balance,
+      holdings: currentUser.holdings,
+      costBasis: currentUser.costBasis || 0
+    });
+    // Log the trade to the trades collection (setDoc/doc already imported at top of file)
+    const tradeRef = doc(tradesCol);
+    await setDoc(tradeRef, {
+      uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
+      type: "sell", usdAmount: usdReceived, coinAmount: item.coinAmount || 0, price,
+      callingIt: item.callingIt || "", timestamp: serverTimestamp()
+    });
     _pendingSellQueue.shift();
     _savePendingSells();
     if (_pendingSellQueue.length) setTimeout(_flushPendingSells, 3000);
-    else { _firestoreQuotaExceeded = false; toast("Queued sell executed ✓", false); }
-  } catch (_) {}
+    else { _firestoreQuotaExceeded = false; toast("Pending sell synced to server ✓", false); }
+  } catch (_) {
+    // Still quota-exceeded — will retry on next interval
+  }
 }
 setInterval(_flushPendingSells, 30000);
 
@@ -334,7 +354,25 @@ el("loginForm").addEventListener("submit", async (e) => {
 function subscribeUser(uref) {
   onSnapshot(uref, (snap) => {
     if (!snap.exists()) return;
-    currentUser = { uid: uref.id, ...snap.data() };
+    const freshData = { uid: uref.id, ...snap.data() };
+    // If we applied a local sell while Firestore was quota-limited,
+    // ignore snapshots that would revert to the pre-sell state.
+    // We detect this by comparing holdings: if the snapshot has MORE holdings
+    // than what we have locally, it means Firestore hasn't flushed our sell yet.
+    if (_firestoreQuotaExceeded && currentUser &&
+        freshData.holdings > currentUser.holdings &&
+        _pendingSellQueue.length > 0) {
+      // Stale snapshot — preserve local balance/holdings, sync everything else
+      freshData.holdings = currentUser.holdings;
+      freshData.balance  = currentUser.balance;
+      freshData.costBasis = currentUser.costBasis;
+    }
+    currentUser = freshData;
+    // When quota clears, the snapshot arriving after a successful flush
+    // is authoritative — clear the quota flag so we stop blocking snapshots.
+    if (!_firestoreQuotaExceeded && _pendingSellQueue.length === 0) {
+      // Normal path — no pending sells, all good
+    }
     // Load triggers from Firestore (source of truth — works across devices)
     if (currentUser.stopLoss !== undefined)    stopLossPrice   = currentUser.stopLoss   || null;
     if (currentUser.takeProfit !== undefined)  takeProfitPrice = currentUser.takeProfit || null;
@@ -1650,8 +1688,12 @@ async function confirmTrade() {
   const callingIt = el("callingItInput").value.trim().slice(0, 60);
 
   try {
+    _lastTradeWasLocal = false;
     await executeTrade(sheetMode, amt, sheetSellAll, callingIt);
-    toast(`${sheetMode === "buy" ? "Bought" : "Sold"} ${fmtUsd(amt)} of $PLTY`, false);
+    // Skip success toast for local sells — _executeLocalSell already showed the quota warning
+    if (!_lastTradeWasLocal) {
+      toast(`${sheetMode === "buy" ? "Bought" : "Sold"} ${fmtUsd(amt)} of $PLTY`, false);
+    }
     sheetLastMax[sheetMode] = false; // reset so next open doesn't auto-fill stale max
     setTimeout(closeSheet, 450);
   } catch (e) {
@@ -1664,11 +1706,20 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
   const uref = doc(usersCol, currentUser.uid);
   const IMPACT_FACTOR = 2.2;
 
+  // Capture the live local price BEFORE entering the transaction.
+  // marketRef is only written every ~15s (5 ticks) for efficiency, so reading it
+  // inside the transaction would give a stale price — sometimes 35%+ behind the
+  // live price the user sees. We use _lastKnownPrice (updated every 3s tick) so
+  // the trade executes at the price shown in the UI, not an old Firestore value.
+  // The transaction still WRITES the post-trade price to marketRef to sync other tabs.
+  const livePrice = _lastKnownPrice || marketState.price || STARTING_PRICE;
+
   try {
     await runTransaction(db, async (tx) => {
-      const [marketSnap, userSnap] = await Promise.all([tx.get(marketRef), tx.get(uref)]);
-      if (!marketSnap.exists() || !userSnap.exists()) throw new Error("Not ready, try again.");
-      let price = marketSnap.data().price;
+      // Only read the user doc from Firestore — we supply the live price ourselves.
+      const userSnap = await tx.get(uref);
+      if (!userSnap.exists()) throw new Error("Not ready, try again.");
+      let price = livePrice;
       const marketCapNow = price * TOTAL_SUPPLY;
       const u = userSnap.data();
       let balance = u.balance || 0;
@@ -1683,7 +1734,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
         balance -= usdAmount;
         costBasis += usdAmount; // track total cost for P&L
         holdings += coinAmount;
-        tx.update(marketRef, { price, marketCap: price * TOTAL_SUPPLY });
+        tx.update(marketRef, { price, marketCap: price * TOTAL_SUPPLY, lastTickIndex: _lastKnownTickIdx });
         tx.update(uref, { balance, holdings, costBasis });
         const tradeDoc = doc(tradesCol);
         tx.set(tradeDoc, {
@@ -1692,7 +1743,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
           timestamp: serverTimestamp()
         });
       } else {
-        const priceNow = marketSnap.data().price;
+        const priceNow = livePrice; // use the same captured live price, not stale Firestore
         // Re-read holdings from the transaction snapshot (not from cached currentUser)
         // so stale transaction retries see the real value and don't sell dust/zero.
         const liveHoldings = u.holdings || 0;
@@ -1709,7 +1760,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
         costBasis = costBasis * (1 - sellRatio);
         holdings = liveHoldings - coinAmount;
         if (holdings < 1e-9) { holdings = 0; costBasis = 0; }
-        tx.update(marketRef, { price, marketCap: price * TOTAL_SUPPLY });
+        tx.update(marketRef, { price, marketCap: price * TOTAL_SUPPLY, lastTickIndex: _lastKnownTickIdx });
         tx.update(uref, { balance, holdings, costBasis });
         const tradeDoc = doc(tradesCol);
         tx.set(tradeDoc, {
@@ -1721,6 +1772,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
     });
     // Successful Firestore transaction — clear quota flag
     _firestoreQuotaExceeded = false;
+    _lastTradeWasLocal = false;
   } catch (err) {
     // Detect quota-exceeded / resource-exhausted errors from Firestore
     const isQuotaErr = err.code === "resource-exhausted" ||
@@ -1729,6 +1781,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
     // For sells: apply locally and queue for retry so the user isn't trapped
     if (isQuotaErr && mode === "sell") {
       _firestoreQuotaExceeded = true;
+      _lastTradeWasLocal = true;
       _executeLocalSell(usdAmount, sellAll, callingIt);
       return; // local sell succeeded — don't throw
     }
@@ -1754,7 +1807,7 @@ function _executeLocalSell(usdAmount, sellAll, callingIt) {
   if (currentUser.holdings < 1e-9) { currentUser.holdings = 0; currentUser.costBasis = 0; }
 
   // Queue this sell so it can be committed to Firestore when quota resets
-  _pendingSellQueue.push({ usdAmount: usdReceived, sellAll: false, callingIt, ts: Date.now() });
+  _pendingSellQueue.push({ usdAmount: usdReceived, coinAmount, sellAll: false, callingIt, ts: Date.now() });
   _savePendingSells();
 
   // Re-render wallet and show a warning
