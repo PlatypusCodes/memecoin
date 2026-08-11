@@ -40,7 +40,7 @@ const REFERRAL_BONUS = 500;
 const TICK_MS = 3000;
 const GLOBAL_SEED = 90210;
 const DEFAULT_AVATAR = "https://avatars.githubusercontent.com/u/298894342?s=60&v=4";
-const MAX_TICK_HISTORY = 2000;
+const MAX_TICK_HISTORY = 20000;
 
 const marketRef = doc(db, "market", "state");
 const tradesCol = collection(db, "trades");
@@ -457,7 +457,10 @@ function subscribeMarket() {
       rebuildLocalTicks();
     } else if (marketState.lastTickIndex > _lastKnownTickIdx) {
       // Another tab wrote a newer state -- fast-forward local cache to match.
-      _lastKnownTickIdx = marketState.lastTickIndex;
+      // Clamp to nowTick so we never let a stale/ahead Firestore value freeze
+      // the local tick loop (advanceLocalTick would return early every call).
+      const nowTick = Math.floor(Date.now() / TICK_MS);
+      _lastKnownTickIdx = Math.min(marketState.lastTickIndex, nowTick);
       _lastKnownPrice   = marketState.price;
     }
 
@@ -548,6 +551,9 @@ let _ticksSinceWrite  = 0;
 // Called once after the first marketRef snapshot seeds _lastKnownTickIdx.
 function rebuildLocalTicks() {
   const nowTick = Math.floor(Date.now() / TICK_MS);
+  // Clamp: if Firestore gave us a tickIndex ahead of wall-clock, pull it back.
+  // Without this, the loop below produces 0 ticks and the chart stays empty.
+  if (_lastKnownTickIdx > nowTick) _lastKnownTickIdx = nowTick;
 
   // Walk back at most MAX_TICK_HISTORY ticks from the current tick.
   // We can't start from 0 -- nowTick is ~580M and the loop would freeze the browser.
@@ -594,6 +600,10 @@ function advanceLocalTick() {
     _lastKnownTickIdx = nowTick - 1; // will add exactly 1 tick below
     _lastKnownPrice = marketState.price || STARTING_PRICE;
   }
+  // Guard: if Firestore or another tab wrote a tickIndex ahead of wall-clock time
+  // (clock drift, leader writing 5 ticks at once, etc.), clamp it back so this
+  // tab's tick loop doesn't stall indefinitely returning without pushing any ticks.
+  if (_lastKnownTickIdx > nowTick) _lastKnownTickIdx = nowTick - 1;
   const lastIdx = _lastKnownTickIdx;
   if (lastIdx >= nowTick) return;
 
@@ -1074,6 +1084,12 @@ document.querySelectorAll(".tf-btn").forEach(btn => {
     document.querySelectorAll(".tf-btn").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     activeTF = btn.dataset.tf;
+    // Stop the pulse animation when leaving live view; drawPulseDot will
+    // restart it if the new timeframe also renders a live tip.
+    if (activeTF !== "live" && _pulseRafId) {
+      cancelAnimationFrame(_pulseRafId);
+      _pulseRafId = null; _pulseDotX = null; _pulseDotY = null; _pulseStart = null;
+    }
     drawChart();
   });
 });
@@ -1089,11 +1105,18 @@ document.querySelectorAll(".ct-btn").forEach(btn => {
 });
 
 const TF_CONFIG = {
-  live: { bucketMs: TICK_MS, maxCandles: 80 },
+  // Live: 30-second buckets, 80 candles = ~40 minutes of live action.
+  // Using 10×TICK_MS (same as the original) rather than TICK_MS (3s) so that
+  // each bucket accumulates several ticks and produces proper OHLC bodies,
+  // and so the chart doesn't scroll a new candle off the right edge every 3s.
+  live: { bucketMs: 10 * TICK_MS, maxCandles: 80 },
   "1m": { bucketMs: 60 * 1000, maxCandles: 80 },
   "5m": { bucketMs: 5 * 60 * 1000, maxCandles: 80 },
   "10m": { bucketMs: 10 * 60 * 1000, maxCandles: 80 },
-  "1h": { bucketMs: 60 * 60 * 1000, maxCandles: 80 },
+  // 1h: with ~16.7h of tick history we can show ~16 candles; cap maxCandles
+  // to match so the chart never renders mostly-empty padding on the left.
+  "1h": { bucketMs: 60 * 60 * 1000, maxCandles: 16 },
+  // All-Time: 30-min buckets across full tick history (~33 candles visible).
   all: { bucketMs: 30 * 60 * 1000, maxCandles: 200 }
 };
 
@@ -1418,19 +1441,63 @@ function drawLineSeries(candles, xFor, yFor, padT, plotH) {
   drawPulseDot(lastPt.x, lastPt.y);
 }
 
+// --- Animated pulse dot ---
+// A lightweight rAF loop keeps the live-tip dot breathing continuously
+// rather than only updating when the tick loop fires every 3 s.
+let _pulseRafId  = null;
+let _pulseDotX   = null;
+let _pulseDotY   = null;
+let _pulseStart  = null;
+
+function _pulseTick(ts) {
+  _pulseRafId = requestAnimationFrame(_pulseTick);
+  if (_pulseDotX === null || !chartLayout) return;
+  if (_pulseStart === null) _pulseStart = ts;
+
+  // Oscillate outer ring every 1.4 s
+  const phase  = ((ts - _pulseStart) % 1400) / 1400;
+  const wave   = Math.sin(phase * Math.PI * 2);
+  const ring   = 7 + wave * 4;         // 3–11 px radius
+  const alpha  = 0.08 + wave * 0.09;   // 0–0.17 opacity
+
+  const bill = cssVar("--bill") || "#ffc94d";
+  const x = _pulseDotX, y = _pulseDotY;
+  const pad = ring + 2;
+
+  // Erase just the dot region, repaint chart content, then draw dot.
+  ctx.save();
+  ctx.clearRect(x - pad, y - pad, pad * 2, pad * 2);
+  // Repaint the clipped chart area so we don't leave a hole.
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x - pad, y - pad, pad * 2, pad * 2); ctx.clip();
+  const { candles, xFor, yFor, padT, plotH, plotW } = chartLayout;
+  if (chartType === "line") drawLineSeries(candles, xFor, yFor, padT, plotH);
+  else drawCandleSeries(candles, xFor, yFor, plotW / candles.length);
+  ctx.restore();
+
+  // Animated outer ring
+  ctx.beginPath(); ctx.arc(x, y, ring, 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(255,201,77,${alpha.toFixed(3)})`; ctx.fill();
+  // Static inner dot
+  ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+  ctx.fillStyle = bill; ctx.shadowColor = bill; ctx.shadowBlur = 8; ctx.fill();
+  ctx.restore();
+}
+
+function startPulseLoop() {
+  if (!_pulseRafId) _pulseRafId = requestAnimationFrame(_pulseTick);
+}
+
 function drawPulseDot(x, y) {
+  _pulseDotX = x; _pulseDotY = y;
+  startPulseLoop(); // idempotent
+  // Static frame for the current drawChart paint pass.
   const bill = cssVar("--bill") || "#ffc94d";
   ctx.save();
-  ctx.beginPath();
-  ctx.arc(x, y, 7, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(255,201,77,0.18)";
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(x, y, 3.5, 0, Math.PI * 2);
-  ctx.fillStyle = bill;
-  ctx.shadowColor = bill;
-  ctx.shadowBlur = 8;
-  ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255,201,77,0.18)"; ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+  ctx.fillStyle = bill; ctx.shadowColor = bill; ctx.shadowBlur = 8; ctx.fill();
   ctx.restore();
 }
 
