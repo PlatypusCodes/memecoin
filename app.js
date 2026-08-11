@@ -1380,7 +1380,11 @@ function drawChart() {
     console.error("[CHART DRAW ERROR]", err);
     try {
       const w = canvas.clientWidth, h = canvas.clientHeight;
-      if (w > 0 && h > 0) ctx.clearRect(0, 0, w, h);
+      if (w > 0 && h > 0) {
+        const dpr = window.devicePixelRatio || 1;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+      }
     } catch (_) {}
   }
 }
@@ -1388,6 +1392,15 @@ function drawChart() {
 function _drawChartImpl() {
   const w = canvas.clientWidth, h = canvas.clientHeight;
   if (w <= 0 || h <= 0) return; // canvas not laid out yet -- resizeCanvas() will retry and redraw
+  // Re-apply the DPR transform every frame. resizeCanvas() sets it once, but
+  // any ctx.save()/restore() imbalance or error in a sub-function can silently
+  // reset the transform back to identity, causing clearRect and all draw calls
+  // to use raw backing-store coordinates instead of logical CSS pixels. This
+  // manifests as the chart appearing frozen (old frame not cleared, new frame
+  // painted at wrong scale in the top-left corner). Re-setting it here costs
+  // nothing and guarantees every frame is painted correctly.
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const cfg = TF_CONFIG[activeTF];
   const candles = buildCandles(cfg.bucketMs, cfg.maxCandles);
   ctx.clearRect(0, 0, w, h);
