@@ -643,13 +643,17 @@ function rebuildLocalTicks() {
     p       = _lastKnownPrice;
     seedIdx = _lastKnownTickIdx;
   }
-  // --- Candidate 3: STARTING_PRICE from tick 0 ---
+  // --- Candidate 3: seed from the current known price ---
   // Covers the case where the live tip is past startIdx AND no stored anchor
-  // exists yet (e.g. fresh deploy before any leader write).
+  // exists yet (e.g. fresh deploy before any leader write). tickIdx values are
+  // absolute (Date.now()/TICK_MS), currently in the hundreds of millions, so
+  // walking stepPrice from tick 0 up to startIdx here would be ~500M+
+  // iterations and hang the tab for minutes. We don't need bit-exact history
+  // for this fallback-only window -- seed it flat from the current price
+  // instead; it self-corrects to the real anchor within a few minutes once
+  // the leader writes one.
   else {
-    p = STARTING_PRICE;
-    // Must walk all the way from tick 0 to startIdx before collecting.
-    for (let i = 0; i < startIdx; i++) p = stepPrice(p, i);
+    p = (marketState && marketState.price) ? marketState.price : STARTING_PRICE;
     seedIdx = startIdx - 1; // collection loop will start at startIdx
   }
 
@@ -761,11 +765,13 @@ async function maybeWriteMarket() {
       const nearest  = ticks.find(t => t.ts >= startTs);
       anchorPrice    = (exact || nearest || ticks[ticks.length - 1]).price;
     } else {
-      // ticks[] doesn't reach back to startIdx — derive by stepping from STARTING_PRICE.
-      // This is at most MAX_TICK_HISTORY steps so it is still fast.
-      let p = STARTING_PRICE;
-      for (let i = 0; i <= startIdx; i++) p = stepPrice(p, i);
-      anchorPrice = p;
+      // ticks[] doesn't reach back to startIdx. tickIdx values are absolute
+      // (Date.now()/TICK_MS, currently hundreds of millions), so stepping from
+      // STARTING_PRICE at tick 0 up to startIdx here is NOT bounded by
+      // MAX_TICK_HISTORY -- it would be ~500M+ iterations and hang the tab.
+      // Fall back to the current known price instead; the anchor will refine
+      // itself on the next write cycle once ticks[] catches up.
+      anchorPrice = _lastKnownPrice || marketState.price || STARTING_PRICE;
     }
     anchorUpdate = { historyAnchor: { tickIdx: startIdx, price: anchorPrice } };
     // Also update local so other tabs get it instantly via the Firestore snapshot.
