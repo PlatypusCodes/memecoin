@@ -1086,19 +1086,33 @@ function buildCandles(bucketMs, maxCandles) {
   }
   const arr = [...map.values()].sort((a, b) => a.ts - b.ts);
 
+  // First pass: set open from previous candle's close for proper candlestick chaining.
+  // This ensures live-mode candles (1 tick per bucket) open where the last one closed.
+  for (let i = 1; i < arr.length; i++) {
+    if (arr[i]._ticks.length === 1) {
+      arr[i].open = arr[i - 1].close;
+      // Recalculate high/low to include the new open
+      arr[i].high = Math.max(arr[i].open, arr[i].close);
+      arr[i].low  = Math.min(arr[i].open, arr[i].close);
+    }
+  }
+
+  // Second pass: synthetic spread for flat candles (open still equals close after chaining).
   for (let i = 0; i < arr.length; i++) {
     const c = arr[i];
     if (c.high === c.low) {
       const prevClose = i > 0 ? arr[i - 1].close : c.open;
-      const nextOpen  = i < arr.length - 1 ? arr[i + 1].open : c.close;
+      const nextClose = i < arr.length - 1 ? arr[i + 1].close : c.close;
       const ref = c.close;
       const r = seededRandom(Math.floor(c.ts / 1000), 99);
-      const spread = ref * (0.008 + r * 0.022);
+      // Use real inter-candle movement as the spread basis when available
+      const realRange = Math.abs(nextClose - prevClose);
+      const spread = realRange > 0 ? realRange * (0.3 + r * 0.4) : ref * (0.004 + r * 0.008);
       c.high = ref + spread;
       c.low  = ref - spread;
-      const dir = nextOpen > prevClose ? 1 : -1;
-      c.open  = ref - dir * spread * 0.4;
-      c.close = ref + dir * spread * 0.4;
+      const dir = nextClose >= prevClose ? 1 : -1;
+      c.open  = ref - dir * spread * 0.5;
+      c.close = ref + dir * spread * 0.5;
     }
   }
   return arr.slice(-maxCandles);
@@ -1380,6 +1394,9 @@ function drawTradeMarkers() {
   candles.forEach((c, i) => bucketToIdx.set(c.ts, i));
 
   const markerData = [];
+  // Track how many markers land on each candle index per side so we can stack them
+  const slotCount = { buy: new Map(), sell: new Map() };
+
   for (const t of visible) {
     let idx;
     if (t.ts < firstTs) {
@@ -1397,20 +1414,55 @@ function drawTradeMarkers() {
     const anchorPrice = t.price != null && t.price >= min && t.price <= max
       ? t.price
       : candle.close;
-    const y = yFor(anchorPrice);
+    const priceY = yFor(anchorPrice);
 
-    const plotTop = padT + 10, plotBottom = h - padB - 10;
-    const cy = Math.min(plotBottom, Math.max(plotTop, y));
-    markerData.push({ ...t, _x: x, _y: cy });
+    // Place avatars above candle for buys, below for sells, stacked if multiple
+    const isBuy = t.type === "buy";
+    const side = isBuy ? "buy" : "sell";
+    const slotMap = slotCount[side];
+    const slot = slotMap.get(idx) || 0;
+    slotMap.set(idx, slot + 1);
+
+    const AVATAR_R = 9;
+    const STEM = 8; // gap between candle wick and avatar
+    let cy;
+    if (isBuy) {
+      // Above the candle high
+      const candleTopY = yFor(candle.high);
+      cy = candleTopY - STEM - AVATAR_R - slot * (AVATAR_R * 2 + 4);
+    } else {
+      // Below the candle low
+      const candleBottomY = yFor(candle.low);
+      cy = candleBottomY + STEM + AVATAR_R + slot * (AVATAR_R * 2 + 4);
+    }
+
+    const plotTop = padT + AVATAR_R + 2, plotBottom = h - padB - AVATAR_R - 2;
+    cy = Math.min(plotBottom, Math.max(plotTop, cy));
+
+    markerData.push({ ...t, _x: x, _y: cy, _priceY: priceY, _isBuy: isBuy });
   }
 
   // Cluster overlapping markers so avatars don't pile up
   const clustered = clusterMarkers(markerData, 18);
 
   for (const m of clustered) {
-    const { _x: x, _y: y } = m;
-    const color = m.type === "buy" ? (cssVar("--toxic") || "#7cff6b") : (cssVar("--venom") || "#ff3d6e");
+    const { _x: x, _y: y, _priceY: priceY, _isBuy: isBuy } = m;
+    const color = isBuy ? (cssVar("--toxic") || "#7cff6b") : (cssVar("--venom") || "#ff3d6e");
+    const rgb   = isBuy ? "124,255,107" : "255,61,110";
 
+    // Draw stem line from avatar to price point
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(x, y + (isBuy ? 9 : -9));
+    ctx.lineTo(x, Math.min(Math.max(priceY, padT), h - padB));
+    ctx.strokeStyle = `rgba(${rgb},0.45)`;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // Draw avatar circle
     ctx.save();
     ctx.beginPath();
     ctx.arc(x, y, 9, 0, Math.PI * 2);
@@ -1418,7 +1470,10 @@ function drawTradeMarkers() {
     ctx.lineWidth = 2;
     ctx.fillStyle = "rgba(11,14,12,0.9)";
     ctx.fill();
+    ctx.shadowColor = `rgba(${rgb},0.6)`;
+    ctx.shadowBlur = 6;
     ctx.stroke();
+    ctx.restore();
 
     const img = getAvatarImg(m.avatarUrl);
     if (img.complete && img.naturalWidth) {
@@ -1444,8 +1499,6 @@ function drawTradeMarkers() {
       ctx.fillText(m._count > 9 ? "9+" : m._count, x + 6, y - 6);
       ctx.restore();
     }
-
-    ctx.restore();
   }
   chartLayout.visibleTrades = markerData;
 
@@ -1556,8 +1609,16 @@ canvas.addEventListener("touchmove", (e) => {
 }, { passive: false });
 canvas.addEventListener("touchend", () => { hoverPoint = null; el("chartTooltip").classList.add("hidden"); });
 
-// Safety redraw: fires if the tick loop somehow missed a cycle
-setInterval(() => { if (booted) drawChart(); }, 1000);
+// Safety redraw: fires if the tick loop somehow missed a cycle.
+// On the live timeframe, also advance local ticks so the chart always moves.
+setInterval(() => {
+  if (!booted) return;
+  if (activeTF === "live") {
+    // Drive ticks forward even if the main loop stalled
+    try { advanceLocalTick(); } catch (e) { console.error("safety tick error:", e); }
+  }
+  drawChart();
+}, 1000);
 
 // ===========================================================
 // TRADE SHEET
