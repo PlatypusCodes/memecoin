@@ -100,9 +100,18 @@ let sheetAmount = "";
 let sheetSellAll = false;
 let lbSort = "pnl";
 
-// Portfolio history for sparkline (array of {ts, value})
-let portfolioHistory = [];
-let lastPortfolioValue = null;
+// Portfolio history for sparkline (array of {ts, value}).
+// Persisted to localStorage so it survives page reloads.
+let portfolioHistory = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem("plty_portfolio_history") || "[]");
+    return Array.isArray(saved) ? saved : [];
+  } catch (_) { return []; }
+})();
+let lastPortfolioValue = portfolioHistory.length ? portfolioHistory[portfolioHistory.length - 1].value : null;
+function _savePortfolioHistory() {
+  try { localStorage.setItem("plty_portfolio_history", JSON.stringify(portfolioHistory.slice(-200))); } catch (_) {}
+}
 
 // Triggers / alerts state
 let stopLossPrice = null;
@@ -460,6 +469,12 @@ function subscribeMarket() {
       if (marketState.historyAnchor) {
         _historyAnchor = marketState.historyAnchor; // { tickIdx, price }
       }
+      // Seed the 24h-open day so the leader does not immediately overwrite a
+      // valid priceOpen24h that was already set today.
+      if (marketState._open24hDay) {
+        // Already present in Firestore — nothing to do; the leader will only
+        // overwrite when the UTC date changes.
+      }
       rebuildLocalTicks();
     } else if (marketState.lastTickIndex > _lastKnownTickIdx) {
       // Another tab wrote a newer state -- fast-forward local cache to match.
@@ -488,8 +503,11 @@ function subscribeMarket() {
 // backfill them so the "Live" candles don't show a gap/jump.
 function rebuildLocalTicksIfBehind() {
   const nowTick = Math.floor(Date.now() / TICK_MS);
-  const lastTs = ticks.length ? ticks[ticks.length - 1].ts : -1;
-  if (_lastKnownTickIdx * TICK_MS > lastTs) {
+  const lastTickTs = ticks.length ? ticks[ticks.length - 1].ts : -1;
+  // Use nowTick directly: after rebuildLocalTicks() updates _lastKnownTickIdx
+  // to nowTick, the old check (_lastKnownTickIdx * TICK_MS > lastTs) stays
+  // false even when ticks[] is stale on the next call.
+  if (nowTick * TICK_MS > lastTickTs) {
     rebuildLocalTicks();
   }
 }
@@ -624,13 +642,15 @@ function rebuildLocalTicks() {
   // Covers the case where the live tip is past startIdx AND no stored anchor
   // exists yet (e.g. fresh deploy before any leader write).
   else {
-    p       = STARTING_PRICE;
-    seedIdx = -1; // step loop will start at i=0
+    p = STARTING_PRICE;
+    // Must walk all the way from tick 0 to startIdx before collecting.
+    for (let i = 0; i < startIdx; i++) p = stepPrice(p, i);
+    seedIdx = startIdx - 1; // collection loop will start at startIdx
   }
 
-  // Pre-walk from seedIdx to the tick just before startIdx (if needed).
-  // For candidates 1 & 3 the pre-walk is already done above; for candidate 2
-  // we walk from _lastKnownTickIdx to startIdx here.
+  // Pre-walk from seedIdx to just before startIdx (candidate 2 only).
+  // Candidates 1 and 3 already finished their pre-walk above and set
+  // seedIdx = startIdx - 1, so this block is a no-op for them.
   if (seedIdx >= 0 && seedIdx < startIdx - 1) {
     for (let i = seedIdx + 1; i < startIdx; i++) {
       p = stepPrice(p, i);
@@ -700,7 +720,9 @@ function advanceLocalTick() {
 
 // Tracks how many market writes have occurred since the leader last refreshed
 // the historyAnchor in Firestore.
-let _anchorWriteCounter = 0;
+// Start at ANCHOR_WRITE_EVERY - 1 so the anchor is written on the very first
+// leader market write instead of waiting a full ANCHOR_WRITE_EVERY cycle.
+let _anchorWriteCounter = ANCHOR_WRITE_EVERY - 1;
 
 async function maybeWriteMarket() {
   if (!_isLeader) return;
@@ -726,10 +748,13 @@ async function maybeWriteMarket() {
     // deploy before any ticks[] have been accumulated).
     let anchorPrice;
     if (ticks.length > 0 && ticks[0].ts <= startIdx * TICK_MS) {
-      // Find the tick at or just before startIdx in our local array.
-      const startTs = startIdx * TICK_MS;
-      const entry   = ticks.find(t => t.ts >= startTs);
-      anchorPrice   = entry ? entry.price : ticks[ticks.length - 1].price;
+      // Find the tick whose ts exactly matches startIdx * TICK_MS.
+      // ticks.find(t => t.ts >= startTs) can overshoot by one tick on a bucket
+      // boundary, so prefer an exact match first and fall back to the nearest entry.
+      const startTs  = startIdx * TICK_MS;
+      const exact    = ticks.find(t => t.ts === startTs);
+      const nearest  = ticks.find(t => t.ts >= startTs);
+      anchorPrice    = (exact || nearest || ticks[ticks.length - 1]).price;
     } else {
       // ticks[] doesn't reach back to startIdx — derive by stepping from STARTING_PRICE.
       // This is at most MAX_TICK_HISTORY steps so it is still fast.
@@ -742,14 +767,28 @@ async function maybeWriteMarket() {
     _historyAnchor = { tickIdx: startIdx, price: anchorPrice };
   }
 
+  // Refresh priceOpen24h once per calendar day (UTC).
+  // The stored value is used by renderTopStats() for the 24h % change display.
+  // We key on the UTC date string so the update fires on the first leader write
+  // after midnight rather than on a fixed interval that could drift.
+  let open24hUpdate = {};
+  const todayUtc = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+  const lastOpen24hDay = marketState._open24hDay || "";
+  if (todayUtc !== lastOpen24hDay) {
+    open24hUpdate = { priceOpen24h: price, _open24hDay: todayUtc };
+    // Update local marketState so renderTopStats() sees 0% change at rollover
+    marketState.priceOpen24h = price;
+    marketState._open24hDay  = todayUtc;
+  }
+
   try {
-    await updateDoc(marketRef, { price, marketCap: price * TOTAL_SUPPLY, lastTickIndex: tickIdx, ...anchorUpdate });
+    await updateDoc(marketRef, { price, marketCap: price * TOTAL_SUPPLY, lastTickIndex: tickIdx, ...anchorUpdate, ...open24hUpdate });
   } catch (_) {
     try {
       await setDoc(marketRef, {
         price, marketCap: price * TOTAL_SUPPLY,
-        lastTickIndex: tickIdx, priceOpen24h: STARTING_PRICE, createdAt: Date.now(),
-        ...anchorUpdate
+        lastTickIndex: tickIdx, priceOpen24h: price, _open24hDay: todayUtc, createdAt: Date.now(),
+        ...anchorUpdate, ...open24hUpdate
       });
     } catch (_) {}
   }
@@ -922,6 +961,7 @@ function renderWallet() {
     lastPortfolioValue = total;
     portfolioHistory.push({ ts: now, value: total });
     if (portfolioHistory.length > 200) portfolioHistory = portfolioHistory.slice(-200);
+    _savePortfolioHistory();
     drawSparkline();
   }
 }
@@ -1180,12 +1220,6 @@ document.querySelectorAll(".tf-btn").forEach(btn => {
     document.querySelectorAll(".tf-btn").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     activeTF = btn.dataset.tf;
-    // Stop the pulse animation when leaving live view; drawPulseDot will
-    // restart it if the new timeframe also renders a live tip.
-    if (activeTF !== "live" && _pulseRafId) {
-      cancelAnimationFrame(_pulseRafId);
-      _pulseRafId = null; _pulseDotX = null; _pulseDotY = null; _pulseStart = null;
-    }
     drawChart();
   });
 });
@@ -1216,8 +1250,17 @@ const TF_CONFIG = {
   all: { bucketMs: 30 * 60 * 1000, maxCandles: 200 }
 };
 
+// Candle cache — keyed on (activeTF, ticks.length) so we only rebuild when
+// the timeframe changes or new ticks have been pushed. Saves repeated O(n)
+// scans on every drawChart() call (safety interval + tick loop + snapshots).
+let _candleCache = { tf: null, len: 0, candles: [] };
+
 function buildCandles(bucketMs, maxCandles) {
   if (!ticks.length) return [];
+  // Return the cached result if nothing has changed.
+  if (_candleCache.tf === activeTF && _candleCache.len === ticks.length) {
+    return _candleCache.candles;
+  }
   const map = new Map();
   for (const t of ticks) {
     const bucket = Math.floor(t.ts / bucketMs) * bucketMs;
@@ -1261,7 +1304,9 @@ function buildCandles(bucketMs, maxCandles) {
       c.close = ref + dir * spread * 0.5;
     }
   }
-  return arr.slice(-maxCandles);
+  const candles = arr.slice(-maxCandles);
+  _candleCache = { tf: activeTF, len: ticks.length, candles };
+  return candles;
 }
 
 // ===========================================================
@@ -1292,9 +1337,17 @@ function resizeCanvas() {
   drawChart();
 }
 
+// Cache CSS custom-property values so drawChart() doesn't call getComputedStyle
+// on every candle / every frame. Invalidated on theme changes (none currently,
+// but invalidateCssVarCache() can be called if a theme toggle is added later).
+const _cssVarCache = new Map();
 function cssVar(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  if (_cssVarCache.has(name)) return _cssVarCache.get(name);
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  _cssVarCache.set(name, v);
+  return v;
 }
+function invalidateCssVarCache() { _cssVarCache.clear(); }
 
 // Public entry point: every caller (tick loop, snapshot listeners, resize,
 // safety interval, UI toggles) goes through here. Wrapping the whole
@@ -1537,57 +1590,10 @@ function drawLineSeries(candles, xFor, yFor, padT, plotH) {
   drawPulseDot(lastPt.x, lastPt.y);
 }
 
-// --- Animated pulse dot ---
-// A lightweight rAF loop keeps the live-tip dot breathing continuously
-// rather than only updating when the tick loop fires every 3 s.
-let _pulseRafId  = null;
-let _pulseDotX   = null;
-let _pulseDotY   = null;
-let _pulseStart  = null;
-
-function _pulseTick(ts) {
-  _pulseRafId = requestAnimationFrame(_pulseTick);
-  if (_pulseDotX === null || !chartLayout) return;
-  if (_pulseStart === null) _pulseStart = ts;
-
-  // Oscillate outer ring every 1.4 s
-  const phase  = ((ts - _pulseStart) % 1400) / 1400;
-  const wave   = Math.sin(phase * Math.PI * 2);
-  const ring   = 7 + wave * 4;         // 3–11 px radius
-  const alpha  = 0.08 + wave * 0.09;   // 0–0.17 opacity
-
-  const bill = cssVar("--bill") || "#ffc94d";
-  const x = _pulseDotX, y = _pulseDotY;
-  const pad = ring + 2;
-
-  // Erase just the dot region, repaint chart content, then draw dot.
-  ctx.save();
-  ctx.clearRect(x - pad, y - pad, pad * 2, pad * 2);
-  // Repaint the clipped chart area so we don't leave a hole.
-  ctx.save();
-  ctx.beginPath(); ctx.rect(x - pad, y - pad, pad * 2, pad * 2); ctx.clip();
-  const { candles, xFor, yFor, padT, plotH, plotW } = chartLayout;
-  if (chartType === "line") drawLineSeries(candles, xFor, yFor, padT, plotH);
-  else drawCandleSeries(candles, xFor, yFor, plotW / candles.length);
-  ctx.restore();
-
-  // Animated outer ring
-  ctx.beginPath(); ctx.arc(x, y, ring, 0, Math.PI * 2);
-  ctx.fillStyle = `rgba(255,201,77,${alpha.toFixed(3)})`; ctx.fill();
-  // Static inner dot
-  ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2);
-  ctx.fillStyle = bill; ctx.shadowColor = bill; ctx.shadowBlur = 8; ctx.fill();
-  ctx.restore();
-}
-
-function startPulseLoop() {
-  if (!_pulseRafId) _pulseRafId = requestAnimationFrame(_pulseTick);
-}
-
+// --- Static live-tip dot ---
+// Simple filled circle with a subtle halo at the latest candle close.
+// No rAF loop — the dot is repainted by the normal drawChart() cadence.
 function drawPulseDot(x, y) {
-  _pulseDotX = x; _pulseDotY = y;
-  startPulseLoop(); // idempotent
-  // Static frame for the current drawChart paint pass.
   const bill = cssVar("--bill") || "#ffc94d";
   ctx.save();
   ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2);
