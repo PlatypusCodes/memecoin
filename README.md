@@ -40,8 +40,6 @@ project/
 
 ### Timeframes
 
-Provide the following chart views:
-
 * Live
 * 1 Minute
 * 5 Minutes
@@ -67,8 +65,6 @@ The **All Time** view should display the complete transaction history, including
 * Buying and selling activity should be associated with the user's profile.
 
 ---
-
-## Branding
 
 ### Favicon
 
