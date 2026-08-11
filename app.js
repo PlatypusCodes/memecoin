@@ -622,12 +622,15 @@ function rebuildLocalTicks() {
   let seedIdx;    // the tick whose price is `p` (we step from seedIdx+1 onward)
 
   // --- Candidate 1: historyAnchor ---
-  // The anchor is kept at the current startIdx by the leader.  It may lag by
-  // up to ANCHOR_WRITE_EVERY market writes (~5 min) but startIdx only advances
-  // one tick per TICK_MS so the discrepancy is at most a few thousand ticks —
-  // well within the MAX_TICK_HISTORY window and still far cheaper than a cold
-  // walk from tick 0.
-  if (_historyAnchor && _historyAnchor.tickIdx <= startIdx) {
+  // The anchor is normally kept fresh (refreshed every ~5 min by the leader),
+  // so the walk from it to startIdx is normally tiny. But if the app sat idle
+  // (no leader tab open) for a long stretch, or this is a doc left over from
+  // an earlier session, the anchor can be arbitrarily stale -- so this walk
+  // needs the same hard cap as candidate 3 below, or a stale-enough anchor
+  // reproduces the exact same freeze via a different path.
+  const ANCHOR_WALK_CAP = MAX_TICK_HISTORY; // never walk further than this
+  if (_historyAnchor && _historyAnchor.tickIdx <= startIdx &&
+      (startIdx - _historyAnchor.tickIdx) <= ANCHOR_WALK_CAP) {
     // Walk forward from the anchor to startIdx (gap is usually tiny).
     p       = _historyAnchor.price;
     seedIdx = _historyAnchor.tickIdx;
@@ -638,7 +641,7 @@ function rebuildLocalTicks() {
                              // so the collection loop below starts at startIdx.
   }
   // --- Candidate 2: live-tip anchor (only when tip is before startIdx) ---
-  else if (_lastKnownTickIdx < startIdx) {
+  else if (_lastKnownTickIdx < startIdx && (startIdx - _lastKnownTickIdx) <= ANCHOR_WALK_CAP) {
     // Walk forward from the known live price to startIdx.
     p       = _lastKnownPrice;
     seedIdx = _lastKnownTickIdx;
