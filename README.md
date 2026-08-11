@@ -1,6 +1,6 @@
 # Memecoin
 
-**By the Platypus Team**
+**By the Platypus Team** ![Profile picture](https://avatars.githubusercontent.com/u/298894342?s=60&v=4)
 
 ## Live Site
 
