@@ -1177,7 +1177,25 @@ function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+// Public entry point: every caller (tick loop, snapshot listeners, resize,
+// safety interval, UI toggles) goes through here. Wrapping the whole
+// implementation in try/catch means a crash on any single frame can never
+// leave the chart stuck showing a stale frame forever with no visible sign
+// something is wrong -- it gets logged clearly and the canvas is cleared so
+// it's obvious to a user something broke, instead of silently freezing.
 function drawChart() {
+  try {
+    _drawChartImpl();
+  } catch (err) {
+    console.error("[CHART DRAW ERROR]", err);
+    try {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      if (w > 0 && h > 0) ctx.clearRect(0, 0, w, h);
+    } catch (_) {}
+  }
+}
+
+function _drawChartImpl() {
   const w = canvas.clientWidth, h = canvas.clientHeight;
   if (w <= 0 || h <= 0) return; // canvas not laid out yet -- resizeCanvas() will retry and redraw
   const cfg = TF_CONFIG[activeTF];
@@ -1641,6 +1659,10 @@ canvas.addEventListener("touchend", () => { hoverPoint = null; el("chartTooltip"
 // Safety redraw: fires if the tick loop somehow missed a cycle.
 // Safety redraw: catches up if the tick loop was throttled (e.g. tab sleep).
 // Runs every 500ms but only costs a canvas clear+repaint -- no Firestore I/O.
+// Wrapped in try/catch: if drawChart() ever throws on a specific data shape,
+// this interval must not let that error repeat silently forever and leave
+// the chart stuck on its last good frame -- log it clearly so it's visible
+// in the console, instead of failing the same way every 500ms unnoticed.
 setInterval(() => {
   if (!booted) return;
   drawChart();
