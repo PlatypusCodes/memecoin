@@ -502,12 +502,12 @@ function subscribeMarket() {
 // without this tab's local tick loop having produced those intermediate ticks,
 // backfill them so the "Live" candles don't show a gap/jump.
 function rebuildLocalTicksIfBehind() {
-  const nowTick = Math.floor(Date.now() / TICK_MS);
-  const lastTickTs = ticks.length ? ticks[ticks.length - 1].ts : -1;
-  // Use nowTick directly: after rebuildLocalTicks() updates _lastKnownTickIdx
-  // to nowTick, the old check (_lastKnownTickIdx * TICK_MS > lastTs) stays
-  // false even when ticks[] is stale on the next call.
-  if (nowTick * TICK_MS > lastTickTs) {
+  // Only rebuild if the market state says there are ticks we have not yet
+  // generated locally.  _lastKnownTickIdx is updated by both rebuildLocalTicks()
+  // and advanceLocalTick(), so it accurately reflects how far our ticks[] array
+  // reaches.  The previous check (nowTick * TICK_MS > lastTickTs) was always
+  // true and triggered a full 20 000-tick rebuild on every Firestore snapshot.
+  if (_marketSeeded && marketState.lastTickIndex > _lastKnownTickIdx) {
     rebuildLocalTicks();
   }
 }
