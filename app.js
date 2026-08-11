@@ -404,6 +404,11 @@ function boot() {
   startTickLoop();
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);
+  // Also watch the chart container directly -- flex layout changes don't always
+  // fire a window resize event, causing canvas.clientWidth to be stale/zero.
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(() => resizeCanvas()).observe(canvas.parentElement);
+  }
   loadTriggers();
   loadAlerts();
   setupReferral();
@@ -505,8 +510,18 @@ function renewLeader() {
 }
 setInterval(renewLeader, LEADER_RENEW);
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) { _isLeader = false; }
-  else { tryClaimLeader(); }
+  if (document.hidden) {
+    _isLeader = false;
+  } else {
+    tryClaimLeader();
+    // Tab came back into focus -- the tick loop may have been throttled by
+    // the browser while hidden. Immediately catch up any missed ticks and
+    // redraw so the chart isn't frozen until the next setInterval fires.
+    if (typeof advanceLocalTick === "function" && typeof drawChart === "function") {
+      try { advanceLocalTick(); } catch(e) {}
+      try { drawChart(); } catch(e) {}
+    }
+  }
 });
 window.addEventListener("beforeunload", () => {
   if (_isLeader) localStorage.removeItem(LEADER_KEY);
@@ -628,10 +643,7 @@ function advanceTick() {
   // returns, instead of appearing frozen. Only the Firestore write is gated on
   // visibility (no point writing when no tab is actively watching).
   advanceLocalTick();
-  if (!document.hidden) {
-    maybeWriteMarket();
-    drawChart();
-  }
+  if (!document.hidden) maybeWriteMarket();
 }
 
 function startTickLoop() {
@@ -1147,15 +1159,7 @@ function cssVar(name) {
 function drawChart() {
   const cfg = TF_CONFIG[activeTF];
   const candles = buildCandles(cfg.bucketMs, cfg.maxCandles);
-  let w = canvas.clientWidth, h = canvas.clientHeight;
-  if (!w || !h) {
-    // Canvas not yet laid out — re-measure from parent and reschedule
-    const wrap = canvas.parentElement;
-    if (wrap) { w = wrap.clientWidth; h = wrap.clientHeight; }
-    if (!w || !h) return;
-    resizeCanvas();
-    return;
-  }
+  const w = canvas.clientWidth, h = canvas.clientHeight;
   ctx.clearRect(0, 0, w, h);
 
   el("chartEmpty").classList.toggle("hidden", candles.length > 0);
@@ -1395,10 +1399,7 @@ function drawTradeMarkers() {
   const { candles, xFor, yFor, bucketMs, min, max, padT, padB, h } = chartLayout;
   if (!candles.length) return;
   const firstTs = candles[0].ts, lastTs = candles[candles.length - 1].ts + bucketMs;
-  // Show recent trades on every timeframe, not just the ones that happen to land
-  // inside the current window. Trades older than the visible range are clamped
-  // to the leftmost candle instead of being dropped, so avatars keep showing up
-  // on "Live"/"1m"/etc. even when no trade occurred in the last few minutes.
+  // Only show trades that fall within the visible candle window.
   const visible = trades.filter(t => t.ts >= firstTs && t.ts < lastTs).slice(0, 120);
 
   const bucketToIdx = new Map();
@@ -1409,15 +1410,10 @@ function drawTradeMarkers() {
   const slotCount = { buy: new Map(), sell: new Map() };
 
   for (const t of visible) {
-    let idx;
-    if (t.ts < firstTs) {
-      idx = 0; // older than the visible window -- pin to the left edge
-    } else {
-      const tradeBucket = Math.floor(t.ts / bucketMs) * bucketMs;
-      idx = bucketToIdx.has(tradeBucket)
-        ? bucketToIdx.get(tradeBucket)
-        : Math.min(candles.length - 1, Math.max(0, Math.floor((t.ts - firstTs) / bucketMs)));
-    }
+    const tradeBucket = Math.floor(t.ts / bucketMs) * bucketMs;
+    let idx = bucketToIdx.has(tradeBucket)
+      ? bucketToIdx.get(tradeBucket)
+      : Math.min(candles.length - 1, Math.max(0, Math.floor((t.ts - firstTs) / bucketMs)));
     idx = Math.min(candles.length - 1, Math.max(0, idx));
 
     const x = xFor(idx);
@@ -1620,12 +1616,13 @@ canvas.addEventListener("touchmove", (e) => {
 }, { passive: false });
 canvas.addEventListener("touchend", () => { hoverPoint = null; el("chartTooltip").classList.add("hidden"); });
 
-// Safety redraw: ensures chart repaints even if the tick loop stalled.
-// Tick advancement is handled exclusively by advanceTick() / startTickLoop().
+// Safety redraw: fires if the tick loop somehow missed a cycle.
+// Safety redraw: catches up if the tick loop was throttled (e.g. tab sleep).
+// Runs every 500ms but only costs a canvas clear+repaint -- no Firestore I/O.
 setInterval(() => {
   if (!booted) return;
   drawChart();
-}, 1000);
+}, 500);
 
 // ===========================================================
 // TRADE SHEET
