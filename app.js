@@ -444,14 +444,28 @@ function subscribeMarket() {
       _lastKnownPrice   = marketState.price;
     }
 
-    renderTopStats();
-    renderVial();
-    renderWallet();
-    renderSheetConvert();
-    refreshSheetIfMaxActive();
-    checkTriggers();
-    checkAlerts();
+    const safe = (fn) => { try { fn(); } catch (err) { console.error("market snapshot render error:", err); } };
+    safe(renderTopStats);
+    safe(renderVial);
+    safe(renderWallet);
+    safe(renderSheetConvert);
+    safe(refreshSheetIfMaxActive);
+    safe(checkTriggers);
+    safe(checkAlerts);
+    safe(rebuildLocalTicksIfBehind);
+    safe(drawChart); // keep the chart in sync with any state another tab wrote
   });
+}
+
+// If another tab (or a fresh multi-tick catch-up) moved the tick index forward
+// without this tab's local tick loop having produced those intermediate ticks,
+// backfill them so the "Live" candles don't show a gap/jump.
+function rebuildLocalTicksIfBehind() {
+  const nowTick = Math.floor(Date.now() / TICK_MS);
+  const lastTs = ticks.length ? ticks[ticks.length - 1].ts : -1;
+  if (_lastKnownTickIdx * TICK_MS > lastTs) {
+    rebuildLocalTicks();
+  }
 }
 
 // ---------- tick engine ----------
@@ -571,14 +585,21 @@ function advanceLocalTick() {
   marketState.price         = price;
   marketState.marketCap     = price * TOTAL_SUPPLY;
   marketState.lastTickIndex = _lastKnownTickIdx;
-  renderTopStats();
-  renderVial();
-  renderWallet();
-  renderSheetConvert();
-  refreshSheetIfMaxActive();
-  checkTriggers();
-  checkAlerts();
-  drawChart();
+
+  // Each render step below is isolated so a failure in one (e.g. a trigger/alert
+  // check throwing on unexpected state) can never prevent the chart from
+  // redrawing -- previously an uncaught error here would silently stop the
+  // rest of the tick's synchronous work, freezing the "Live" chart while
+  // stats that render earlier in the sequence kept updating.
+  const safe = (fn) => { try { fn(); } catch (err) { console.error("tick render error:", err); } };
+  safe(renderTopStats);
+  safe(renderVial);
+  safe(renderWallet);
+  safe(renderSheetConvert);
+  safe(refreshSheetIfMaxActive);
+  safe(checkTriggers);
+  safe(checkAlerts);
+  safe(drawChart);
 }
 
 async function maybeWriteMarket() {
@@ -1349,17 +1370,26 @@ function drawTradeMarkers() {
   const { candles, xFor, yFor, bucketMs, min, max, padT, padB, h } = chartLayout;
   if (!candles.length) return;
   const firstTs = candles[0].ts, lastTs = candles[candles.length - 1].ts + bucketMs;
-  const visible = trades.filter(t => t.ts >= firstTs && t.ts < lastTs).slice(0, 120);
+  // Show recent trades on every timeframe, not just the ones that happen to land
+  // inside the current window. Trades older than the visible range are clamped
+  // to the leftmost candle instead of being dropped, so avatars keep showing up
+  // on "Live"/"1m"/etc. even when no trade occurred in the last few minutes.
+  const visible = trades.filter(t => t.ts < lastTs).slice(0, 120);
 
   const bucketToIdx = new Map();
   candles.forEach((c, i) => bucketToIdx.set(c.ts, i));
 
   const markerData = [];
   for (const t of visible) {
-    const tradeBucket = Math.floor(t.ts / bucketMs) * bucketMs;
-    let idx = bucketToIdx.has(tradeBucket)
-      ? bucketToIdx.get(tradeBucket)
-      : Math.min(candles.length - 1, Math.max(0, Math.floor((t.ts - firstTs) / bucketMs)));
+    let idx;
+    if (t.ts < firstTs) {
+      idx = 0; // older than the visible window -- pin to the left edge
+    } else {
+      const tradeBucket = Math.floor(t.ts / bucketMs) * bucketMs;
+      idx = bucketToIdx.has(tradeBucket)
+        ? bucketToIdx.get(tradeBucket)
+        : Math.min(candles.length - 1, Math.max(0, Math.floor((t.ts - firstTs) / bucketMs)));
+    }
     idx = Math.min(candles.length - 1, Math.max(0, idx));
 
     const x = xFor(idx);
