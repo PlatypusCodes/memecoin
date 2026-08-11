@@ -88,7 +88,7 @@ function stepPrice(price, tickIdx) {
 
 // ---------- state ----------
 let currentUser = null;
-let marketState = { price: STARTING_PRICE, marketCap: STARTING_PRICE * TOTAL_SUPPLY, lastTickIndex: 0, priceOpen24h: STARTING_PRICE };
+let marketState = { price: STARTING_PRICE, marketCap: STARTING_PRICE * TOTAL_SUPPLY, lastTickIndex: 0, priceOpen24h: STARTING_PRICE, historyAnchor: null };
 let ticks = [];
 let trades = [];
 let traderMap = new Map();
@@ -454,6 +454,12 @@ function subscribeMarket() {
       _marketSeeded     = true;
       _lastKnownTickIdx = marketState.lastTickIndex || 0;
       _lastKnownPrice   = marketState.price || STARTING_PRICE;
+      // Seed the history anchor from Firestore so rebuildLocalTicks() can
+      // correctly reconstruct the full price history without walking from the
+      // current tick all the way back to the anchor price.
+      if (marketState.historyAnchor) {
+        _historyAnchor = marketState.historyAnchor; // { tickIdx, price }
+      }
       rebuildLocalTicks();
     } else if (marketState.lastTickIndex > _lastKnownTickIdx) {
       // Another tab wrote a newer state -- fast-forward local cache to match.
@@ -547,50 +553,103 @@ let _lastKnownPrice   = STARTING_PRICE;
 let _lastKnownTickIdx = -1; // -1 = not yet seeded; set by rebuildLocalTicks or first advanceLocalTick
 let _ticksSinceWrite  = 0;
 
+// historyAnchor: the price at the chart window's startIdx, written to Firestore
+// by the leader so every tab can reconstruct the full MAX_TICK_HISTORY window
+// without having to walk forward from _lastKnownTickIdx (which is at the live
+// tip and can be far ahead of startIdx, making reconstruction impossible without
+// stepping backwards -- which stepPrice doesn't support).
+// Shape: { tickIdx: number, price: number } | null
+let _historyAnchor = null;
+// How often the leader refreshes the history anchor in Firestore (every N writes).
+// At MARKET_WRITE_EVERY=5 ticks (~15s/write) this is ~5 minutes.
+const ANCHOR_WRITE_EVERY = 20;
+
 // Rebuild client-side tick array from the deterministic engine.
-// Called once after the first marketRef snapshot seeds _lastKnownTickIdx.
+// Called once after the first marketRef snapshot seeds _lastKnownTickIdx,
+// and again whenever rebuildLocalTicksIfBehind() detects a gap.
+//
+// Strategy: we need a known (tickIdx, price) pair that is AT OR BEFORE
+// startIdx so we can step forward from there. Three candidates, in order
+// of preference:
+//
+//   1. _historyAnchor — written by the leader to Firestore and loaded by
+//      every tab on the first snapshot. Anchored exactly at startIdx so
+//      no pre-walk is needed. This is the fast, correct path.
+//
+//   2. _lastKnownPrice / _lastKnownTickIdx — the live-tip price kept in
+//      sync by advanceLocalTick(). When the anchor is absent (first run
+//      before a leader has written it) and the live tip is BEFORE startIdx,
+//      we walk forward from the tip — a short gap of at most MAX_TICK_HISTORY
+//      ticks. When the live tip is PAST startIdx (common after a reload)
+//      stepping back is impossible, so this path falls through to…
+//
+//   3. STARTING_PRICE at tick 0 — always available, never needs a pre-walk,
+//      but forces a full scan from tick 0 forward. With MAX_TICK_HISTORY=20 000
+//      at 3 s/tick that is at most ~16.7 hours of ticks — fast enough
+//      (~20 000 stepPrice calls, each a handful of multiplies) and only
+//      reached when neither anchor nor usable live-tip is present.
 function rebuildLocalTicks() {
   const nowTick = Math.floor(Date.now() / TICK_MS);
   // Clamp: if Firestore gave us a tickIndex ahead of wall-clock, pull it back.
-  // Without this, the loop below produces 0 ticks and the chart stays empty.
   if (_lastKnownTickIdx > nowTick) _lastKnownTickIdx = nowTick;
 
-  // Walk back at most MAX_TICK_HISTORY ticks from the current tick.
-  // We can't start from 0 -- nowTick is ~580M and the loop would freeze the browser.
-  // Instead fast-forward a seed price to startIdx using a shortcut, then step normally.
   const startIdx = Math.max(0, nowTick - MAX_TICK_HISTORY + 1);
 
-  // Fast-forward price to startIdx.
-  // stepPrice is cheap per call but we can't call it 580M times either,
-  // so we use the known anchor from Firestore (_lastKnownPrice at _lastKnownTickIdx)
-  // and only walk the short gap between that anchor and startIdx if needed.
-  let p;
-  if (_lastKnownTickIdx >= startIdx) {
-    // Anchor is already past startIdx -- step back isn't possible, so just
-    // re-derive forward from the anchor.
-    p = _lastKnownPrice;
-    const newTicks = [];
-    for (let i = _lastKnownTickIdx + 1; i <= nowTick; i++) {
+  let p;          // seed price
+  let seedIdx;    // the tick whose price is `p` (we step from seedIdx+1 onward)
+
+  // --- Candidate 1: historyAnchor ---
+  // The anchor is kept at the current startIdx by the leader.  It may lag by
+  // up to ANCHOR_WRITE_EVERY market writes (~5 min) but startIdx only advances
+  // one tick per TICK_MS so the discrepancy is at most a few thousand ticks —
+  // well within the MAX_TICK_HISTORY window and still far cheaper than a cold
+  // walk from tick 0.
+  if (_historyAnchor && _historyAnchor.tickIdx <= startIdx) {
+    // Walk forward from the anchor to startIdx (gap is usually tiny).
+    p       = _historyAnchor.price;
+    seedIdx = _historyAnchor.tickIdx;
+    for (let i = seedIdx + 1; i < startIdx; i++) {
       p = stepPrice(p, i);
-      newTicks.push({ price: p, ts: i * TICK_MS });
     }
-    // Prepend what we have in ticks already up to anchor
-    ticks = [...ticks.slice(-(MAX_TICK_HISTORY - newTicks.length)), ...newTicks];
-    return;
-  } else {
-    // Walk forward from anchor to startIdx, then collect from startIdx to nowTick.
-    p = _lastKnownPrice;
-    for (let i = _lastKnownTickIdx + 1; i < startIdx; i++) {
+    seedIdx = startIdx - 1; // after the walk, p is the price at startIdx-1's step
+                             // so the collection loop below starts at startIdx.
+  }
+  // --- Candidate 2: live-tip anchor (only when tip is before startIdx) ---
+  else if (_lastKnownTickIdx < startIdx) {
+    // Walk forward from the known live price to startIdx.
+    p       = _lastKnownPrice;
+    seedIdx = _lastKnownTickIdx;
+  }
+  // --- Candidate 3: STARTING_PRICE from tick 0 ---
+  // Covers the case where the live tip is past startIdx AND no stored anchor
+  // exists yet (e.g. fresh deploy before any leader write).
+  else {
+    p       = STARTING_PRICE;
+    seedIdx = -1; // step loop will start at i=0
+  }
+
+  // Pre-walk from seedIdx to the tick just before startIdx (if needed).
+  // For candidates 1 & 3 the pre-walk is already done above; for candidate 2
+  // we walk from _lastKnownTickIdx to startIdx here.
+  if (seedIdx >= 0 && seedIdx < startIdx - 1) {
+    for (let i = seedIdx + 1; i < startIdx; i++) {
       p = stepPrice(p, i);
     }
   }
 
+  // Collect ticks from startIdx to nowTick.
   const newTicks = [];
   for (let i = startIdx; i <= nowTick; i++) {
     p = stepPrice(p, i);
     newTicks.push({ price: p, ts: i * TICK_MS });
   }
   ticks = newTicks;
+
+  // Update the live-tip vars so advanceLocalTick() doesn't re-walk the same range.
+  if (newTicks.length) {
+    _lastKnownPrice   = p;
+    _lastKnownTickIdx = nowTick;
+  }
 }
 
 function advanceLocalTick() {
@@ -639,6 +698,10 @@ function advanceLocalTick() {
   safe(drawChart);
 }
 
+// Tracks how many market writes have occurred since the leader last refreshed
+// the historyAnchor in Firestore.
+let _anchorWriteCounter = 0;
+
 async function maybeWriteMarket() {
   if (!_isLeader) return;
   _ticksSinceWrite++;
@@ -647,13 +710,46 @@ async function maybeWriteMarket() {
 
   const price   = _lastKnownPrice;
   const tickIdx = _lastKnownTickIdx;
+
+  // Decide whether to refresh the historyAnchor this write cycle.
+  // The anchor is the price at startIdx = nowTick - MAX_TICK_HISTORY + 1,
+  // giving every tab a known (tickIdx, price) pair to reconstruct the full
+  // visible tick window without an expensive walk from STARTING_PRICE at tick 0.
+  _anchorWriteCounter++;
+  let anchorUpdate = {};
+  if (_anchorWriteCounter >= ANCHOR_WRITE_EVERY) {
+    _anchorWriteCounter = 0;
+    const nowTick  = Math.floor(Date.now() / TICK_MS);
+    const startIdx = Math.max(0, nowTick - MAX_TICK_HISTORY + 1);
+    // Walk forward from the current ticks[] array if startIdx is in range,
+    // otherwise derive from STARTING_PRICE (cold path, happens once on a fresh
+    // deploy before any ticks[] have been accumulated).
+    let anchorPrice;
+    if (ticks.length > 0 && ticks[0].ts <= startIdx * TICK_MS) {
+      // Find the tick at or just before startIdx in our local array.
+      const startTs = startIdx * TICK_MS;
+      const entry   = ticks.find(t => t.ts >= startTs);
+      anchorPrice   = entry ? entry.price : ticks[ticks.length - 1].price;
+    } else {
+      // ticks[] doesn't reach back to startIdx — derive by stepping from STARTING_PRICE.
+      // This is at most MAX_TICK_HISTORY steps so it is still fast.
+      let p = STARTING_PRICE;
+      for (let i = 0; i <= startIdx; i++) p = stepPrice(p, i);
+      anchorPrice = p;
+    }
+    anchorUpdate = { historyAnchor: { tickIdx: startIdx, price: anchorPrice } };
+    // Also update local so other tabs get it instantly via the Firestore snapshot.
+    _historyAnchor = { tickIdx: startIdx, price: anchorPrice };
+  }
+
   try {
-    await updateDoc(marketRef, { price, marketCap: price * TOTAL_SUPPLY, lastTickIndex: tickIdx });
+    await updateDoc(marketRef, { price, marketCap: price * TOTAL_SUPPLY, lastTickIndex: tickIdx, ...anchorUpdate });
   } catch (_) {
     try {
       await setDoc(marketRef, {
         price, marketCap: price * TOTAL_SUPPLY,
-        lastTickIndex: tickIdx, priceOpen24h: STARTING_PRICE, createdAt: Date.now()
+        lastTickIndex: tickIdx, priceOpen24h: STARTING_PRICE, createdAt: Date.now(),
+        ...anchorUpdate
       });
     } catch (_) {}
   }
