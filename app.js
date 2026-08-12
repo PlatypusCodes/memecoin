@@ -13,7 +13,8 @@ import {
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot,
   collection, query, orderBy, limit,
-  runTransaction, serverTimestamp, getDocs, where
+  runTransaction, serverTimestamp, getDocs, where,
+  writeBatch
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 
 // ---------- Firebase ----------
@@ -515,6 +516,21 @@ function subscribeMarket() {
       return;
     }
     marketState = snap.data();
+
+    // Sync a full game reset triggered by the admin ("Reset Everything") so
+    // every connected tab clears its own local portfolio-history sparkline,
+    // not just the admin's. gameResetAt is a plain epoch-ms timestamp written
+    // once by the admin action below; each tab compares it against the last
+    // reset it already applied (stored in localStorage) so it only clears once.
+    if (marketState.gameResetAt) {
+      const lastApplied = parseInt(localStorage.getItem("plty_last_game_reset") || "0", 10);
+      if (marketState.gameResetAt > lastApplied) {
+        localStorage.setItem("plty_last_game_reset", String(marketState.gameResetAt));
+        portfolioHistory = [];
+        lastPortfolioValue = null;
+        _savePortfolioHistory();
+      }
+    }
 
     // Sync boost/dump mode from Firestore so all tabs see the admin's pump/dump.
     // boostModeEndTime / dumpModeEndTime are absolute epoch-ms timestamps written
@@ -2912,21 +2928,56 @@ el("adminGiveCash").addEventListener("click", async () => {
   }
 });
 
-// Reset the Coin
+// Reset Everything (coin history, transaction feed, leaderboard, every
+// player's cash/holdings, and portfolio history) — a full game reset.
 el("adminResetCoin").addEventListener("click", async () => {
   if (!isAdminUser()) return;
-  if (!confirm("Reset the coin? This wipes all price history and restarts from the beginning. Are you sure?")) return;
+  if (!confirm("Reset the ENTIRE game? This wipes the coin's price history, clears the transaction feed, resets the leaderboard, and puts every player back to " + fmtUsd(STARTING_BALANCE) + " cash with no holdings. This cannot be undone. Are you sure?")) return;
+  const btn = el("adminResetCoin");
+  btn.disabled = true;
   try {
-    // Reset market state to starting values with a new tick index origin
     const nowTick = Math.floor(Date.now() / TICK_MS);
+    const resetAt = Date.now();
+
+    // 1) Reset market state to starting values with a new tick index origin,
+    //    and stamp gameResetAt so every connected tab clears its own local
+    //    portfolio-history sparkline (see subscribeMarket()).
     await updateDoc(marketRef, {
       price: STARTING_PRICE,
       marketCap: STARTING_PRICE * TOTAL_SUPPLY,
       lastTickIndex: nowTick,
       priceOpen24h: STARTING_PRICE,
-      historyAnchor: { tickIdx: nowTick, price: STARTING_PRICE }
+      historyAnchor: { tickIdx: nowTick, price: STARTING_PRICE },
+      boostModeEndTime: 0,
+      dumpModeEndTime: 0,
+      gameResetAt: resetAt
     });
-    // Reset local state immediately
+
+    // 2) Wipe the transaction feed (all trades = leaderboard trade stats,
+    //    buy/sell badges, volume, etc all derive from this collection).
+    const tradesSnap = await getDocs(tradesCol);
+    const tradeDocs = tradesSnap.docs;
+    for (let i = 0; i < tradeDocs.length; i += 450) {
+      const batch = writeBatch(db);
+      tradeDocs.slice(i, i + 450).forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
+
+    // 3) Reset every player back to starting cash with no holdings —
+    //    this is what the leaderboard ranks on.
+    const usersSnap = await getDocs(usersCol);
+    const userDocs = usersSnap.docs;
+    for (let i = 0; i < userDocs.length; i += 450) {
+      const batch = writeBatch(db);
+      userDocs.slice(i, i + 450).forEach(d => batch.update(d.ref, {
+        balance: STARTING_BALANCE,
+        holdings: 0,
+        costBasis: 0
+      }));
+      await batch.commit();
+    }
+
+    // 4) Reset local state immediately for the admin's own tab.
     ticks = [];
     _ticksGen++;
     _lastKnownPrice = STARTING_PRICE;
@@ -2936,10 +2987,31 @@ el("adminResetCoin").addEventListener("click", async () => {
     marketState.marketCap = STARTING_PRICE * TOTAL_SUPPLY;
     marketState.lastTickIndex = nowTick;
     sparklineTradeEvents = [];
-    toast("🔄 Coin reset! Starting fresh from " + fmtPrice(STARTING_PRICE), false);
+    portfolioHistory = [];
+    lastPortfolioValue = null;
+    _savePortfolioHistory();
+    localStorage.setItem("plty_last_game_reset", String(resetAt));
+    trades = [];
+    traderMap = new Map();
+    _lbUserCache = [];
+    _lbFetchTs = 0;
+    if (currentUser) {
+      currentUser.balance = STARTING_BALANCE;
+      currentUser.holdings = 0;
+      currentUser.costBasis = 0;
+    }
+
+    toast("🔄 Game fully reset! Everyone's back to " + fmtUsd(STARTING_BALANCE), false);
+    renderFeed();
+    renderLeaderboard();
+    renderTopStats();
+    renderWallet();
     drawChart();
+    openAdminPortal();
   } catch (err) {
     toast("Reset failed: " + (err.message || err), true);
+  } finally {
+    btn.disabled = false;
   }
 });
 
