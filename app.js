@@ -600,14 +600,38 @@ function tryClaimLeader() {
   }
 }
 function renewLeader() {
-  if (_isLeader) localStorage.setItem(LEADER_KEY, String(Date.now()));
+  // Only renew when the tab is visible. If the tab is hidden, let the key
+  // expire so another tab can claim leadership and keep Firestore current.
+  if (_isLeader && !document.hidden) localStorage.setItem(LEADER_KEY, String(Date.now()));
 }
 setInterval(renewLeader, LEADER_RENEW);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
+    // Drop local leader flag so this tab stops writing while hidden,
+    // but leave the localStorage key intact. With other users online,
+    // another tab will claim leadership naturally once the key expires
+    // (LEADER_TTL = 8s). Removing the key immediately caused thrash:
+    // any minimise/tab-switch would trigger an unnecessary leadership
+    // handoff and a brief Firestore write gap.
     _isLeader = false;
   } else {
+    // Always try to reclaim. If another tab refreshed the key while we were
+    // hidden, tryClaimLeader will fail (correctly). If nobody did — either
+    // because we're solo or the key expired — we win the claim back.
     tryClaimLeader();
+    // Edge case: we were the leader before hiding and the key is still
+    // ours (hidden < LEADER_TTL, nobody else wrote it). tryClaimLeader
+    // sees it as "fresh" and won't reclaim, leaving us leaderless.
+    // Force-reclaim if the key is present but _isLeader is still false.
+    if (!_isLeader) {
+      const stored = parseInt(localStorage.getItem(LEADER_KEY) || "0", 10);
+      // If the key is older than LEADER_RENEW it means nobody refreshed it
+      // while we were hidden — safe to force-reclaim.
+      if (Date.now() - stored > LEADER_RENEW) {
+        localStorage.setItem(LEADER_KEY, String(Date.now()));
+        _isLeader = true;
+      }
+    }
     // Tab came back into focus -- the tick loop may have been throttled by
     // the browser while hidden. Immediately catch up any missed ticks and
     // redraw so the chart isn't frozen until the next setInterval fires.
@@ -617,9 +641,63 @@ document.addEventListener("visibilitychange", () => {
     }
   }
 });
-window.addEventListener("beforeunload", () => {
-  if (_isLeader) localStorage.removeItem(LEADER_KEY);
-});
+// Shared flush used by both beforeunload and pagehide.
+// Uses fetch+keepalive (the only mechanism browsers guarantee will complete
+// after the page starts unloading) to write the freshest possible tick state
+// to Firestore so the next leader seeds from a near-realtime anchor instead
+// of a value that may be up to ~15s stale (the normal throttled write interval).
+let _flushFired = false; // guard: only flush once per page lifetime
+function flushLeaderState() {
+  if (!_isLeader) return;
+  // Release the leader lock so another tab (or this tab after reload) can
+  // claim leadership immediately without waiting for LEADER_TTL to expire.
+  localStorage.removeItem(LEADER_KEY);
+  _isLeader = false;
+
+  if (_flushFired || _lastKnownTickIdx < 0 || !marketRef) return;
+  _flushFired = true;
+  try {
+    const projectId = firebaseConfig.projectId;
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/market/state`;
+
+    const nowTick  = Math.floor(Date.now() / TICK_MS);
+    const startIdx = Math.max(0, nowTick - MAX_TICK_HISTORY + 1);
+    let anchorPrice = _lastKnownPrice;
+    if (ticks.length > 0 && ticks[0].ts <= startIdx * TICK_MS) {
+      const startTs = startIdx * TICK_MS;
+      const exact   = ticks.find(t => t.ts === startTs);
+      const nearest = ticks.find(t => t.ts >= startTs);
+      anchorPrice   = (exact || nearest || ticks[ticks.length - 1]).price;
+    }
+
+    const fields = {
+      price:         { doubleValue: _lastKnownPrice },
+      marketCap:     { doubleValue: _lastKnownPrice * TOTAL_SUPPLY },
+      lastTickIndex: { integerValue: String(_lastKnownTickIdx) },
+      historyAnchor: {
+        mapValue: {
+          fields: {
+            tickIdx: { integerValue: String(startIdx) },
+            price:   { doubleValue: anchorPrice }
+          }
+        }
+      }
+    };
+    const mask = Object.keys(fields).map(f => `updateMask.fieldPaths=${encodeURIComponent(f)}`).join("&");
+    fetch(`${url}?${mask}`, {
+      method:    "PATCH",
+      keepalive: true,
+      headers:   { "Content-Type": "application/json" },
+      body:      JSON.stringify({ fields })
+    }).catch(() => {});
+  } catch (_) {}
+}
+
+// beforeunload fires on desktop refresh/close (reliable on desktop).
+window.addEventListener("beforeunload", flushLeaderState);
+// pagehide fires more reliably on mobile (iOS Safari skips beforeunload).
+// The _flushFired guard prevents a double-flush when both events fire.
+window.addEventListener("pagehide", flushLeaderState);
 
 // --- Local price state (all tabs keep this in sync) ---
 let _lastKnownPrice   = STARTING_PRICE;
