@@ -2186,7 +2186,7 @@ window.addEventListener("touchmove", onPointerMove, { passive: false });
 window.addEventListener("mouseup", onPointerUp);
 window.addEventListener("touchend", onPointerUp);
 
-async function confirmTrade() {
+async function confirmTrade(isQuick = false) {
   const amt = parseFloat(sheetAmount || "0") || 0;
   const errEl = el("sheetError");
   errEl.textContent = "";
@@ -2201,7 +2201,8 @@ async function confirmTrade() {
     await executeTrade(sheetMode, amt, sheetSellAll, callingIt);
     // Skip success toast for local sells — _executeLocalSell already showed the quota warning
     if (!_lastTradeWasLocal) {
-      toast(`${sheetMode === "buy" ? "Bought" : "Sold"} ${fmtUsd(amt)} of $PLTY`, false);
+      const verb = sheetMode === "buy" ? "Bought" : "Sold";
+      toast(isQuick ? `⚡ Instantly ${verb.toLowerCase()} ${fmtUsd(amt)} of $PLTY` : `${verb} ${fmtUsd(amt)} of $PLTY`, false);
     }
     sheetLastMax[sheetMode] = false; // reset so next open doesn't auto-fill stale max
     setTimeout(closeSheet, 450);
@@ -2353,7 +2354,7 @@ function renderQuickBtns() {
         sheetAmount = String(amt);
         renderSheetAmount();
         renderSheetConvert();
-        confirmTrade(); // quick buttons trade instantly — no slide-to-confirm needed
+        confirmTrade(true); // quick buttons trade instantly — no slide-to-confirm needed
       });
       container.appendChild(b);
     });
@@ -2370,7 +2371,12 @@ function renderQuickBtns() {
         sheetAmount = String(Math.floor((usdVal * pct / 100) * 100) / 100);
         renderSheetAmount();
         renderSheetConvert();
-        confirmTrade(); // quick buttons trade instantly — no slide-to-confirm needed
+        // Instant visual confirmation right on the button, since the trade fires immediately
+        b.classList.remove("flash-confirm");
+        void b.offsetWidth; // restart animation if clicked rapidly
+        b.classList.add("flash-confirm");
+        setTimeout(() => b.classList.remove("flash-confirm"), 500);
+        confirmTrade(true); // quick buttons trade instantly — no slide-to-confirm needed
       });
       container.appendChild(b);
     });

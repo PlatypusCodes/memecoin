@@ -394,6 +394,11 @@ a{ color:inherit; }
 .quick-btn.qb:hover{ background:var(--toxic-dim); border-color:var(--toxic); }
 .quick-btn.qs{ border-color:rgba(255,61,110,.35); color:var(--venom); }
 .quick-btn.qs:hover{ background:var(--venom-dim); border-color:var(--venom); }
+.quick-btn.flash-confirm{ animation:quickBtnFlash .5s ease; }
+@keyframes quickBtnFlash{
+  0%{ background:var(--venom); color:#fff; border-color:var(--venom); transform:scale(1.06); }
+  100%{ background:var(--surface-3); transform:scale(1); }
+}
 
 /* quick trade config (wallet panel) */
 .triggers-title-row{
