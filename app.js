@@ -163,8 +163,12 @@ async function _flushPendingSells() {
   const item = _pendingSellQueue[0];
   try {
     const uref = doc(usersCol, currentUser.uid);
-    const price = marketState.price || STARTING_PRICE;
-    const usdReceived = item.coinAmount ? item.coinAmount * price : item.usdAmount;
+    // Use the price captured at the moment the sell actually happened, not the
+    // (possibly much later, since this can flush up to 30s after the fact) current
+    // market price — otherwise the chart marker anchors to the wrong candle/price
+    // entirely, landing the sell dot in the wrong spot on the chart.
+    const price = item.price || marketState.price || STARTING_PRICE;
+    const usdReceived = item.usdAmount || (item.coinAmount ? item.coinAmount * price : 0);
     // Write the locally-computed end state directly — no reads needed
     await updateDoc(uref, {
       balance:  currentUser.balance,
@@ -175,8 +179,8 @@ async function _flushPendingSells() {
     const tradeRef = doc(tradesCol);
     await setDoc(tradeRef, {
       uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
-      type: "sell", usdAmount: usdReceived, coinAmount: item.coinAmount || 0, price,
-      callingIt: item.callingIt || "", timestamp: serverTimestamp()
+      type: "sell", usdAmount: usdReceived, coinAmount: item.coinAmount || 0, price, displayPrice: price,
+      callingIt: item.callingIt || "", tsFallback: item.ts || Date.now(), timestamp: serverTimestamp()
     });
     _pendingSellQueue.shift();
     _savePendingSells();
@@ -2189,8 +2193,10 @@ function _executeLocalSell(usdAmount, sellAll, callingIt) {
   currentUser.costBasis = (currentUser.costBasis || 0) * (1 - sellRatio);
   if (currentUser.holdings < 1e-9) { currentUser.holdings = 0; currentUser.costBasis = 0; }
 
-  // Queue this sell so it can be committed to Firestore when quota resets
-  _pendingSellQueue.push({ usdAmount: usdReceived, coinAmount, sellAll: false, callingIt, ts: Date.now() });
+  // Queue this sell so it can be committed to Firestore when quota resets.
+  // Store the execution price/time now — flushing later must use these, not
+  // whatever the market price happens to be when the queue drains.
+  _pendingSellQueue.push({ usdAmount: usdReceived, coinAmount, price, sellAll: false, callingIt, ts: Date.now() });
   _savePendingSells();
 
   // Re-render wallet and show a warning
