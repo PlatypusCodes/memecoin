@@ -500,6 +500,23 @@ function subscribeMarket() {
     }
     marketState = snap.data();
 
+    // Sync boost/dump mode from Firestore so all tabs see the admin's pump/dump.
+    // boostModeEndTime / dumpModeEndTime are absolute epoch-ms timestamps written
+    // by the admin tab; every tab compares them against its own Date.now() in stepPrice.
+    if (marketState.boostModeEndTime && marketState.boostModeEndTime > Date.now()) {
+      _boostModeActive  = true;
+      _boostModeEndTime = marketState.boostModeEndTime;
+      _dumpModeActive   = false;
+    } else if (marketState.dumpModeEndTime && marketState.dumpModeEndTime > Date.now()) {
+      _dumpModeActive   = true;
+      _dumpModeEndTime  = marketState.dumpModeEndTime;
+      _boostModeActive  = false;
+    } else {
+      // Both expired or absent — clear local state.
+      _boostModeActive = false;
+      _dumpModeActive  = false;
+    }
+
     // On first real snapshot: seed local price state from Firestore and
     // rebuild the client-side tick history so the chart fills in.
     // NOTE: don't gate on lastTickIndex being truthy -- it can legitimately
@@ -2730,6 +2747,8 @@ el("adminBoost").addEventListener("click", () => {
   _boostModeActive = true;
   _dumpModeActive = false;
   _boostModeEndTime = Date.now() + 30000;
+  // Write to Firestore so all tabs pick it up via subscribeMarket snapshot.
+  updateDoc(marketRef, { boostModeEndTime: _boostModeEndTime, dumpModeEndTime: 0 }).catch(() => {});
   const btn = el("adminBoost");
   const status = el("adminBoostStatus");
   btn.classList.add("active");
@@ -2746,6 +2765,7 @@ el("adminBoost").addEventListener("click", () => {
       clearInterval(_adminBoostTimer);
       _adminBoostTimer = null;
       _boostModeActive = false;
+      updateDoc(marketRef, { boostModeEndTime: 0 }).catch(() => {});
       btn.classList.remove("active");
       status.textContent = "Price only goes up for 30 seconds 👀";
       toast("Boost ended", false);
@@ -2761,6 +2781,8 @@ el("adminDump").addEventListener("click", () => {
   _dumpModeActive = true;
   _boostModeActive = false;
   _dumpModeEndTime = Date.now() + 30000;
+  // Write to Firestore so all tabs pick it up via subscribeMarket snapshot.
+  updateDoc(marketRef, { dumpModeEndTime: _dumpModeEndTime, boostModeEndTime: 0 }).catch(() => {});
   const btn = el("adminDump");
   const status = el("adminBoostStatus");
   btn.classList.add("active");
@@ -2777,6 +2799,7 @@ el("adminDump").addEventListener("click", () => {
       clearInterval(_adminDumpTimer);
       _adminDumpTimer = null;
       _dumpModeActive = false;
+      updateDoc(marketRef, { dumpModeEndTime: 0 }).catch(() => {});
       btn.classList.remove("active");
       status.textContent = "Price only goes up for 30 seconds 👀";
       toast("Dump ended", false);
