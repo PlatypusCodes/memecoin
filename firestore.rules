@@ -56,7 +56,8 @@ service cloud.firestore {
       // conflicting writes rather than enumerating every field in rules.
       allow update: if request.auth != null
         && request.resource.data.price is number
-        && request.resource.data.price > 0;
+        && request.resource.data.price > 0
+        && request.resource.data.price < 1e15;
 
       allow delete: if false;
     }

@@ -60,7 +60,12 @@ function seededRandom(tickIdx, salt) {
   const seed = (GLOBAL_SEED ^ Math.imul(tickIdx, 2654435761) ^ Math.imul(salt, 668265263)) >>> 0;
   return mulberry32(seed)();
 }
+function safePrice(p) {
+  // Guard against NaN / Infinity / negative / zero corrupting the price chain.
+  return (typeof p === "number" && isFinite(p) && p > 0) ? p : STARTING_PRICE;
+}
 function stepPrice(price, tickIdx) {
+  price = safePrice(price);
   const r1 = seededRandom(tickIdx, 1);
   const r2 = seededRandom(tickIdx, 2);
   const r3 = seededRandom(tickIdx, 3);
@@ -524,7 +529,7 @@ function subscribeMarket() {
     if (!_marketSeeded) {
       _marketSeeded     = true;
       _lastKnownTickIdx = marketState.lastTickIndex || 0;
-      _lastKnownPrice   = marketState.price || STARTING_PRICE;
+      _lastKnownPrice   = safePrice(marketState.price);
       // Seed the history anchor from Firestore so rebuildLocalTicks() can
       // correctly reconstruct the full price history without walking from the
       // current tick all the way back to the anchor price.
@@ -549,7 +554,7 @@ function subscribeMarket() {
       // the local tick loop (advanceLocalTick would return early every call).
       const nowTick = Math.floor(Date.now() / TICK_MS);
       _lastKnownTickIdx = Math.min(marketState.lastTickIndex, nowTick);
-      _lastKnownPrice   = marketState.price;
+      _lastKnownPrice   = safePrice(marketState.price);
       // Rebuild tick history so the chart fills in correctly.
       // rebuildLocalTicksIfBehind() below won't fire because we just updated
       // _lastKnownTickIdx to match marketState.lastTickIndex.
@@ -680,8 +685,8 @@ function flushLeaderState() {
     // Store the live tip as the anchor (not startIdx) so the next session
     // always has a valid chain entry point regardless of how much time passes.
     const fields = {
-      price:         { doubleValue: _lastKnownPrice },
-      marketCap:     { doubleValue: _lastKnownPrice * TOTAL_SUPPLY },
+      price:         { doubleValue: safePrice(_lastKnownPrice) },
+      marketCap:     { doubleValue: safePrice(_lastKnownPrice) * TOTAL_SUPPLY },
       lastTickIndex: { integerValue: String(_lastKnownTickIdx) },
       historyAnchor: {
         mapValue: {
@@ -772,7 +777,7 @@ function rebuildLocalTicks(checkTriggersOnCatchup) {
   // startIdx it's too stale to be useful — fall through.
   const ANCHOR_WALK_CAP = MAX_TICK_HISTORY;
   if (_historyAnchor && (nowTick - _historyAnchor.tickIdx) <= ANCHOR_WALK_CAP) {
-    p       = _historyAnchor.price;
+    p       = safePrice(_historyAnchor.price);
     seedIdx = _historyAnchor.tickIdx;
     // Walk forward from anchor to just before startIdx (no-op when anchor >= startIdx).
     for (let i = seedIdx + 1; i < startIdx; i++) {
@@ -816,7 +821,7 @@ function rebuildLocalTicks(checkTriggersOnCatchup) {
 
   // Update the live-tip vars so advanceLocalTick() doesn't re-walk the same range.
   if (newTicks.length) {
-    _lastKnownPrice   = p;
+    _lastKnownPrice   = safePrice(p);
     _lastKnownTickIdx = nowTick;
   }
 
@@ -838,7 +843,7 @@ function advanceLocalTick() {
   // If not yet seeded by Firestore snapshot, seed from wall clock now so ticks flow immediately.
   if (_lastKnownTickIdx < 0) {
     _lastKnownTickIdx = nowTick - 1; // will add exactly 1 tick below
-    _lastKnownPrice = marketState.price || STARTING_PRICE;
+    _lastKnownPrice = safePrice(marketState.price);
   }
   // Guard: if Firestore or another tab wrote a tickIndex ahead of wall-clock time
   // (clock drift, leader writing 5 ticks at once, etc.), clamp it back so this
@@ -848,7 +853,7 @@ function advanceLocalTick() {
   if (lastIdx >= nowTick) return;
 
   const steps = Math.min(nowTick - lastIdx, 5);
-  let price = _lastKnownPrice;
+  let price = safePrice(_lastKnownPrice);
   const newPrices = [];
   for (let i = 1; i <= steps; i++) {
     const idx = lastIdx + i;
@@ -893,8 +898,9 @@ async function maybeWriteMarket() {
   if (_ticksSinceWrite < MARKET_WRITE_EVERY) return;
   _ticksSinceWrite = 0;
 
-  const price   = _lastKnownPrice;
+  const price   = safePrice(_lastKnownPrice);
   const tickIdx = _lastKnownTickIdx;
+  if (!isFinite(price) || price <= 0) return; // never write a corrupt price
 
   // Always write the live tip as the historyAnchor on every throttled write.
   // Storing the tip (tickIdx, price) means any new session can always use
