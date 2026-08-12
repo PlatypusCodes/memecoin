@@ -787,3 +787,19 @@ button:focus-visible, input:focus-visible{ outline:2px solid var(--toxic); outli
   margin: 0;
   line-height: 1.4;
 }
+.admin-boost-row { display: flex; gap: 8px; }
+.admin-boost-row .admin-btn { flex: 1; }
+.admin-btn-dump {
+  background: linear-gradient(135deg, rgba(255,61,110,0.2), rgba(180,0,60,0.2));
+  border: 1px solid rgba(255,61,110,0.5);
+  color: #ff3d6e;
+}
+.admin-btn-dump:hover { background: linear-gradient(135deg, rgba(255,61,110,0.35), rgba(180,0,60,0.3)); }
+.admin-btn-dump.active {
+  background: linear-gradient(135deg, rgba(255,61,110,0.5), rgba(180,0,60,0.4));
+  animation: dumpPulse 0.8s ease-in-out infinite alternate;
+}
+@keyframes dumpPulse {
+  from { box-shadow: 0 0 6px rgba(255,61,110,0.4); }
+  to { box-shadow: 0 0 18px rgba(255,61,110,0.9); }
+}

@@ -89,6 +89,12 @@ function stepPrice(price, tickIdx) {
   } else if (_boostModeActive) {
     _boostModeActive = false;
   }
+  // Dump mode: if active, force price downward only
+  if (_dumpModeActive && Date.now() < _dumpModeEndTime) {
+    changePct = -(Math.abs(changePct) + 0.02);
+  } else if (_dumpModeActive) {
+    _dumpModeActive = false;
+  }
   return Math.max(price * (1 + changePct), STARTING_PRICE * 0.05);
 }
 
@@ -126,6 +132,10 @@ let sparklineTradeEvents = [];
 // Boost mode: when active, price only goes up for 30 seconds
 let _boostModeActive = false;
 let _boostModeEndTime = 0;
+
+// Dump mode: when active, price only goes down for 30 seconds
+let _dumpModeActive = false;
+let _dumpModeEndTime = 0;
 
 // Triggers / alerts state
 let stopLossPrice = null;
@@ -2518,6 +2528,7 @@ const ADMIN_EMAIL = "detlaffcameron@gmail.com";
 let _adminPortalOpen = false;
 let _adminUsers = [];
 let _adminBoostTimer = null;
+let _adminDumpTimer = null;
 
 function isAdminUser() {
   if (!currentUser) return false;
@@ -2619,13 +2630,16 @@ el("adminResetCoin").addEventListener("click", async () => {
 el("adminBoost").addEventListener("click", () => {
   if (!isAdminUser()) return;
   _boostModeActive = true;
+  _dumpModeActive = false;
   _boostModeEndTime = Date.now() + 30000;
   const btn = el("adminBoost");
   const status = el("adminBoostStatus");
   btn.classList.add("active");
+  el("adminDump").classList.remove("active");
   toast("🚀 BOOST ACTIVATED — price only goes up for 30s!", false);
 
   if (_adminBoostTimer) clearInterval(_adminBoostTimer);
+  if (_adminDumpTimer) { clearInterval(_adminDumpTimer); _adminDumpTimer = null; }
   let remaining = 30;
   status.textContent = `🚀 BOOSTING — ${remaining}s remaining!`;
   _adminBoostTimer = setInterval(() => {
@@ -2639,6 +2653,37 @@ el("adminBoost").addEventListener("click", () => {
       toast("Boost ended", false);
     } else {
       status.textContent = `🚀 BOOSTING — ${remaining}s remaining!`;
+    }
+  }, 1000);
+});
+
+// Cheeky Dump
+el("adminDump").addEventListener("click", () => {
+  if (!isAdminUser()) return;
+  _dumpModeActive = true;
+  _boostModeActive = false;
+  _dumpModeEndTime = Date.now() + 30000;
+  const btn = el("adminDump");
+  const status = el("adminBoostStatus");
+  btn.classList.add("active");
+  el("adminBoost").classList.remove("active");
+  toast("💀 DUMP ACTIVATED — price only goes down for 30s!", false);
+
+  if (_adminDumpTimer) clearInterval(_adminDumpTimer);
+  if (_adminBoostTimer) { clearInterval(_adminBoostTimer); _adminBoostTimer = null; }
+  let remaining = 30;
+  status.textContent = `💀 DUMPING — ${remaining}s remaining!`;
+  _adminDumpTimer = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(_adminDumpTimer);
+      _adminDumpTimer = null;
+      _dumpModeActive = false;
+      btn.classList.remove("active");
+      status.textContent = "Price only goes up for 30 seconds 👀";
+      toast("Dump ended", false);
+    } else {
+      status.textContent = `💀 DUMPING — ${remaining}s remaining!`;
     }
   }, 1000);
 });
