@@ -855,9 +855,23 @@ function rebuildLocalTicks(checkTriggersOnCatchup) {
     }
   }
 
-  // Collect ticks from startIdx to nowTick.
+  // Collect ticks. Normally starts at startIdx (Candidates 2/3, or Candidate 1
+  // when the anchor itself is older than startIdx). But when the anchor is AT
+  // OR AFTER startIdx — the common case, since the anchor is periodically
+  // refreshed to the live tip, and always true right after a reset — we must
+  // only collect real ticks from seedIdx+1 forward. stepPrice()'s per-tick
+  // move is a pure function of wall-clock tick index, so re-stepping from
+  // startIdx would just regenerate the same price *shape* as before (only
+  // rescaled to the new seed price), making a reset look like it never
+  // happened. Instead we seed a single genuine point at seedIdx itself, then
+  // only add new ticks after it — so the chart actually starts flat/fresh
+  // right at the reset point instead of faking hours of prior history.
   const newTicks = [];
-  for (let i = startIdx; i <= nowTick; i++) {
+  if (seedIdx >= startIdx - 1 && seedIdx <= nowTick) {
+    newTicks.push({ price: p, ts: seedIdx * TICK_MS });
+  }
+  const collectStart = Math.max(startIdx, seedIdx + 1);
+  for (let i = collectStart; i <= nowTick; i++) {
     p = stepPrice(p, i);
     newTicks.push({ price: p, ts: i * TICK_MS });
   }
