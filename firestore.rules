@@ -3,9 +3,15 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function isAdmin() {
+      return request.auth != null && request.auth.token.email == "detlaffcameron@gmail.com";
+    }
+
     // ---------- users/{uid} ----------
     match /users/{userId} {
-      allow read: if request.auth != null && request.auth.uid == userId;
+      // Admin can read all users; others can only read their own.
+      allow read: if request.auth != null
+        && (request.auth.uid == userId || isAdmin());
 
       allow create: if request.auth != null
         && request.auth.uid == userId
@@ -17,14 +23,20 @@ service cloud.firestore {
         && request.resource.data.holdings is number
         && request.resource.data.holdings >= 0;
 
-      allow update: if request.auth != null
-        && request.auth.uid == userId
-        && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['balance', 'holdings', 'username', 'avatarUrl', 'costBasis', 'referredBy', 'referralBonuses'])
-        && request.resource.data.balance is number
-        && request.resource.data.balance >= 0
-        && request.resource.data.holdings is number
-        && request.resource.data.holdings >= 0;
+      // Normal users can update their own allowed fields.
+      // Admin can update any field on any user (for balance adjustments etc).
+      allow update: if request.auth != null && (
+        (request.auth.uid == userId
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['balance', 'holdings', 'username', 'avatarUrl',
+                         'costBasis', 'referredBy', 'referralBonuses',
+                         'pinnedItem', 'quickBuys', 'quickSells'])
+          && request.resource.data.balance is number
+          && request.resource.data.balance >= 0
+          && request.resource.data.holdings is number
+          && request.resource.data.holdings >= 0)
+        || isAdmin()
+      );
 
       allow delete: if false;
     }
@@ -37,9 +49,12 @@ service cloud.firestore {
         && request.resource.data.price is number
         && request.resource.data.price > 0;
 
+      // Allow all authenticated users to update market state.
+      // The full field set has grown (historyAnchor, boostModeEndTime,
+      // dumpModeEndTime, _open24hDay) so we use a loose field check here
+      // and rely on the leader-election logic in the client to prevent
+      // conflicting writes rather than enumerating every field in rules.
       allow update: if request.auth != null
-        && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['price', 'marketCap', 'lastTickIndex', 'priceOpen24h'])
         && request.resource.data.price is number
         && request.resource.data.price > 0;
 
