@@ -850,7 +850,7 @@ function subscribeTrades() {
   const q = query(tradesCol, orderBy("timestamp", "desc"), limit(500));
   onSnapshot(q, (snap) => {
     trades = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-      .map(t => ({ ...t, ts: t.timestamp && t.timestamp.toMillis ? t.timestamp.toMillis() : (t.tsFallback || Date.now()) }))
+      .map(t => ({ ...t, ts: t.tsFallback || (t.timestamp && t.timestamp.toMillis ? t.timestamp.toMillis() : Date.now()) }))
       .filter(t => t.ts);
     buildTraderMap();
     renderFeed();
@@ -2073,6 +2073,12 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
   const uref = doc(usersCol, currentUser.uid);
   const IMPACT_FACTOR = 2.2;
 
+  // Capture the exact client-side timestamp at click time, before any async work.
+  // serverTimestamp() resolves on the server after the round-trip, placing the marker
+  // 1-3 ticks behind where the live dot was. tsFallback is stored alongside the
+  // server timestamp and used instead for chart positioning.
+  const clickTs = Date.now();
+
   // Capture the live local price BEFORE entering the transaction.
   // marketRef is only written every ~15s (5 ticks) for efficiency, so reading it
   // inside the transaction would give a stale price — sometimes 35%+ behind the
@@ -2107,7 +2113,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
         tx.set(tradeDoc, {
           uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
           type: "buy", usdAmount, coinAmount, price, displayPrice: livePrice, callingIt: callingIt || "",
-          timestamp: serverTimestamp()
+          tsFallback: clickTs, timestamp: serverTimestamp()
         });
       } else {
         const priceNow = livePrice; // use the same captured live price, not stale Firestore
@@ -2133,7 +2139,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
         tx.set(tradeDoc, {
           uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
           type: "sell", usdAmount: usdReceived, coinAmount, price, displayPrice: priceNow, callingIt: callingIt || "",
-          timestamp: serverTimestamp()
+          tsFallback: clickTs, timestamp: serverTimestamp()
         });
       }
     });
