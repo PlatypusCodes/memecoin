@@ -432,7 +432,15 @@ function subscribeUser(uref) {
     renderTriggerStatus();
     renderQuickTradePreview();
     renderQuickBtns();
-    checkTriggers();
+    // Scan the whole tick window we currently hold, not just the latest price.
+    // This is what actually catches a stop-loss/take-profit that should have
+    // fired while this tab was closed or backgrounded: the chart's tick history
+    // (rebuilt on load/reconnect) can span up to ~16.7h, and the SL/TP values
+    // themselves usually aren't loaded yet at the exact moment that rebuild ran
+    // — so the very first time this handler sees the real trigger price after
+    // reconnecting is here, and that's also the first moment we can correctly
+    // check it against everything that happened while nobody was watching.
+    checkTriggers(ticks.length ? ticks.map(t => t.price) : undefined);
   });
 }
 
@@ -512,7 +520,12 @@ function subscribeMarket() {
         // Already present in Firestore — nothing to do; the leader will only
         // overwrite when the UTC date changes.
       }
-      rebuildLocalTicks();
+      // Pass true here too: SL/TP are normally still null at this exact point
+      // (loadTriggers()/subscribeUser() haven't necessarily resolved yet), so
+      // this is a harmless no-op most of the time — but if they *are* already
+      // loaded, a real order that should have fired while the tab was closed
+      // gets caught immediately instead of silently missed.
+      rebuildLocalTicks(true);
     } else if (marketState.lastTickIndex > _lastKnownTickIdx) {
       // Another tab wrote a newer state -- fast-forward local cache to match.
       // Clamp to nowTick so we never let a stale/ahead Firestore value freeze
@@ -2361,6 +2374,7 @@ function setupTriggerUI() {
     renderTriggerStatus();
     toast(stopLossPrice ? `Stop-loss set at ${fmtPrice(stopLossPrice)}` : "Stop-loss cleared", false);
     drawChart();
+    checkTriggers(); // catch the case where price is already past the level you just set
   });
   el("tpBtn").addEventListener("click", () => {
     const v = parseFloat(el("tpInput").value);
@@ -2369,6 +2383,7 @@ function setupTriggerUI() {
     renderTriggerStatus();
     toast(takeProfitPrice ? `Take-profit set at ${fmtPrice(takeProfitPrice)}` : "Take-profit cleared", false);
     drawChart();
+    checkTriggers(); // catch the case where price is already past the level you just set
   });
 }
 
