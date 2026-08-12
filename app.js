@@ -523,7 +523,7 @@ function subscribeMarket() {
       // Rebuild tick history so the chart fills in correctly.
       // rebuildLocalTicksIfBehind() below won't fire because we just updated
       // _lastKnownTickIdx to match marketState.lastTickIndex.
-      rebuildLocalTicks();
+      rebuildLocalTicks(true);
     }
 
     const safe = (fn) => { try { fn(); } catch (err) { console.error("market snapshot render error:", err); } };
@@ -550,7 +550,7 @@ function rebuildLocalTicksIfBehind() {
   const expectedLen = Math.min(MAX_TICK_HISTORY, nowTick + 1);
   const tooShort = ticks.length < Math.min(80, expectedLen); // at least 80 ticks for chart
   if (_marketSeeded && (marketState.lastTickIndex > _lastKnownTickIdx || tooShort)) {
-    rebuildLocalTicks();
+    rebuildLocalTicks(true);
   }
 }
 
@@ -648,10 +648,15 @@ const ANCHOR_WRITE_EVERY = 20;
 //      at 3 s/tick that is at most ~16.7 hours of ticks — fast enough
 //      (~20 000 stepPrice calls, each a handful of multiplies) and only
 //      reached when neither anchor nor usable live-tip is present.
-function rebuildLocalTicks() {
+function rebuildLocalTicks(checkTriggersOnCatchup) {
   const nowTick = Math.floor(Date.now() / TICK_MS);
   // Clamp: if Firestore gave us a tickIndex ahead of wall-clock, pull it back.
   if (_lastKnownTickIdx > nowTick) _lastKnownTickIdx = nowTick;
+
+  // Remember where we were before this rebuild so we can tell "real" newly
+  // elapsed ticks (which must be checked against SL/TP) apart from the
+  // historical backfill used only to (re)populate the chart on first load.
+  const prevTickIdx = _lastKnownTickIdx;
 
   const startIdx = Math.max(0, nowTick - MAX_TICK_HISTORY + 1);
 
@@ -720,6 +725,18 @@ function rebuildLocalTicks() {
     _lastKnownPrice   = p;
     _lastKnownTickIdx = nowTick;
   }
+
+  // This rebuild can cover a real gap in elapsed time (tab was backgrounded
+  // and its setInterval got throttled, or another tab advanced the price
+  // while this one was asleep). Any prices generated in that gap were never
+  // checked against SL/TP — advanceLocalTick() only sees the price *after*
+  // this rebuild runs. Scan the newly-elapsed portion now so a trade that
+  // dipped through the SL/TP line and recovered before the tab woke back up
+  // still triggers the sell instead of silently missing it.
+  if (checkTriggersOnCatchup && prevTickIdx >= 0) {
+    const freshPrices = newTicks.filter(t => t.ts > prevTickIdx * TICK_MS).map(t => t.price);
+    if (freshPrices.length) checkTriggers(freshPrices);
+  }
 }
 
 function advanceLocalTick() {
@@ -738,10 +755,12 @@ function advanceLocalTick() {
 
   const steps = Math.min(nowTick - lastIdx, 5);
   let price = _lastKnownPrice;
+  const newPrices = [];
   for (let i = 1; i <= steps; i++) {
     const idx = lastIdx + i;
     price = stepPrice(price, idx);
     ticks.push({ price, ts: idx * TICK_MS });
+    newPrices.push(price);
   }
   if (ticks.length > MAX_TICK_HISTORY) { ticks = ticks.slice(-MAX_TICK_HISTORY); _ticksGen++; }
 
@@ -763,7 +782,7 @@ function advanceLocalTick() {
   safe(renderWallet);
   safe(renderSheetConvert);
   safe(refreshSheetIfMaxActive);
-  safe(checkTriggers);
+  safe(() => checkTriggers(newPrices));
   safe(checkAlerts);
   safe(drawChart);
 }
@@ -2372,25 +2391,36 @@ function renderTriggerStatus() {
   el("triggerStatus").textContent = parts.length ? "Active: " + parts.join(" · ") : "No triggers set";
 }
 
-async function checkTriggers() {
+async function checkTriggers(candidatePrices) {
   if (!currentUser || triggersExecuting) return;
-  const price = marketState.price;
-  if (!price) return;
   const holdings = currentUser.holdings || 0;
   if (holdings <= 0) return;
+  if (!stopLossPrice && !takeProfitPrice) return;
 
-  let shouldSell = false;
-  let reason = "";
+  // Scan every price generated since the last check, in chronological order —
+  // not just the latest one. Ticks are batched (up to 5 per advanceLocalTick
+  // call, or a large catch-up block after the tab was backgrounded), and this
+  // price feed can swing sharply between ticks. Checking only the final price
+  // meant a trade that dipped through the SL/TP level and bounced back within
+  // one batch — very plausible with the swings stepPrice can produce — never
+  // triggered a sell at all, even though the price clearly crossed the line.
+  const prices = (candidatePrices && candidatePrices.length) ? candidatePrices : [marketState.price];
 
-  if (stopLossPrice && price <= stopLossPrice) {
-    shouldSell = true;
-    reason = `Stop-loss triggered at ${fmtPrice(price)}`;
-  } else if (takeProfitPrice && price >= takeProfitPrice) {
-    shouldSell = true;
-    reason = `Take-profit triggered at ${fmtPrice(price)}`;
+  let hitPrice = null, reason = "";
+  for (const price of prices) {
+    if (!price) continue;
+    if (stopLossPrice && price <= stopLossPrice) {
+      hitPrice = price;
+      reason = `Stop-loss triggered at ${fmtPrice(price)}`;
+      break;
+    } else if (takeProfitPrice && price >= takeProfitPrice) {
+      hitPrice = price;
+      reason = `Take-profit triggered at ${fmtPrice(price)}`;
+      break;
+    }
   }
 
-  if (!shouldSell) return;
+  if (hitPrice == null) return;
 
   // Snapshot trigger prices for restoration if the trade fails.
   const _triggerSlBackup = stopLossPrice;
