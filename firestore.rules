@@ -94,10 +94,7 @@ service cloud.firestore {
         && request.resource.data.price > 0
         && request.resource.data.username is string;
 
-      allow update: if false;
-      // Only the admin can delete trades, and only as part of the
-      // "Reset Everything" admin-portal action (wiping the tx feed/leaderboard).
-      allow delete: if isAdmin();
+      allow update, delete: if false;
     }
   }
 }
