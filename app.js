@@ -410,9 +410,18 @@ function subscribeUser(uref) {
     if (!_firestoreQuotaExceeded && _pendingSellQueue.length === 0) {
       // Normal path — no pending sells, all good
     }
-    // Load triggers from Firestore (source of truth — works across devices)
-    if (currentUser.stopLoss !== undefined)    stopLossPrice   = currentUser.stopLoss   || null;
-    if (currentUser.takeProfit !== undefined)  takeProfitPrice = currentUser.takeProfit || null;
+    // Load triggers from Firestore (source of truth — works across devices).
+    // Skip this sync while a trigger-driven sell is in flight: checkTriggers()
+    // already cleared stopLossPrice/takeProfitPrice locally and fired an async
+    // saveTriggers() write, but the trade's own transaction touches this same
+    // user doc a moment later. If that snapshot lands before the clear-write is
+    // reflected server-side, this code would read the still-old SL/TP value and
+    // resurrect a trigger that just fired — silently un-clearing it right after
+    // the sell, which looks like "the trigger doesn't work" on the next tick.
+    if (!triggersExecuting) {
+      if (currentUser.stopLoss !== undefined)    stopLossPrice   = currentUser.stopLoss   || null;
+      if (currentUser.takeProfit !== undefined)  takeProfitPrice = currentUser.takeProfit || null;
+    }
     // Load quick trade config from user doc
     if (Array.isArray(currentUser.quickBuys))  quickBuys  = currentUser.quickBuys;
     if (Array.isArray(currentUser.quickSells)) quickSells = currentUser.quickSells;
@@ -2318,8 +2327,8 @@ function saveTriggers() {
   // Persist to Firestore so triggers survive page reloads and work across devices.
   // localStorage is kept as a fast-read fallback for initial render before snapshot arrives.
   localStorage.setItem("plty_triggers", JSON.stringify({ sl: stopLossPrice, tp: takeProfitPrice }));
-  if (!currentUser) return;
-  updateDoc(doc(usersCol, currentUser.uid), {
+  if (!currentUser) return Promise.resolve();
+  return updateDoc(doc(usersCol, currentUser.uid), {
     stopLoss:   stopLossPrice   || null,
     takeProfit: takeProfitPrice || null
   }).catch(() => {});
@@ -2392,7 +2401,7 @@ async function checkTriggers() {
   triggersExecuting = true;
   stopLossPrice = null;
   takeProfitPrice = null;
-  saveTriggers();
+  await saveTriggers();
   renderTriggerStatus();
   drawChart();
 
