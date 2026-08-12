@@ -203,6 +203,10 @@ const DEFAULT_QUICK_SELLS = [25, 50, 100];      // % of holdings
 let quickBuys  = [...DEFAULT_QUICK_BUYS];
 let quickSells = [...DEFAULT_QUICK_SELLS];
 
+// Chart marker transparency (per-trader preference, persisted to Firestore)
+let buyMarkerOpacity  = 1;
+let sellMarkerOpacity = 1;
+
 // ===========================================================
 // AUTH / ONBOARDING
 // ===========================================================
@@ -430,6 +434,12 @@ function subscribeUser(uref) {
     // Load quick trade config from user doc
     if (Array.isArray(currentUser.quickBuys))  quickBuys  = currentUser.quickBuys;
     if (Array.isArray(currentUser.quickSells)) quickSells = currentUser.quickSells;
+    // Load chart marker transparency (clamp to a sane 0.1–1 range in case of bad data)
+    if (typeof currentUser.buyMarkerOpacity === "number")
+      buyMarkerOpacity = Math.min(1, Math.max(0.1, currentUser.buyMarkerOpacity));
+    if (typeof currentUser.sellMarkerOpacity === "number")
+      sellMarkerOpacity = Math.min(1, Math.max(0.1, currentUser.sellMarkerOpacity));
+    syncOpacitySliders();
     renderProfile();
     renderWallet();
     renderSheetConvert();
@@ -486,6 +496,7 @@ function boot() {
   setupTriggerUI();
   setupAlertUI();
   setupQuickTradeUI();
+  setupMarkerOpacityUI();
 }
 
 // ===========================================================
@@ -1831,6 +1842,10 @@ function drawTradeMarkers() {
     const { _x: x, _y: y, _priceY: priceY, _isBuy: isBuy } = m;
     const color = isBuy ? (cssVar("--toxic") || "#7cff6b") : (cssVar("--venom") || "#ff3d6e");
     const rgb   = isBuy ? "124,255,107" : "255,61,110";
+    const markerAlpha = isBuy ? buyMarkerOpacity : sellMarkerOpacity;
+
+    ctx.save();
+    ctx.globalAlpha = markerAlpha;
 
     // Draw stem line from avatar to price point
     ctx.save();
@@ -1881,6 +1896,8 @@ function drawTradeMarkers() {
       ctx.fillText(m._count > 9 ? "9+" : m._count, x + 6, y - 6);
       ctx.restore();
     }
+
+    ctx.restore(); // pop the per-marker globalAlpha set above
   }
   chartLayout.visibleTrades = markerData;
 
@@ -2362,40 +2379,134 @@ function renderQuickTradePreview() {
 
 function saveQuickTrade() {
   if (!currentUser) return;
-  updateDoc(doc(usersCol, currentUser.uid), { quickBuys, quickSells }).catch(() => {});
+  updateDoc(doc(usersCol, currentUser.uid), { quickBuys, quickSells }).catch(() => {
+    toast("Couldn't save quick buttons — try again", true);
+  });
+}
+
+function openQuickEditor() {
+  const editor = el("quickEditor");
+  editor.classList.remove("hidden");
+  el("quickEditBtn").textContent = "Done";
+  // Populate inputs with current values every time it's opened, so edits
+  // always start from what's actually saved (not stale values from a
+  // previous open/close that never got applied).
+  ["qb0","qb1","qb2"].forEach((id, i) => {
+    el(id).value = quickBuys[i] > 0 ? quickBuys[i] : "";
+  });
+  ["qs0","qs1","qs2"].forEach((id, i) => {
+    el(id).value = quickSells[i] > 0 ? quickSells[i] : "";
+  });
+  // Focus the first field so the user can start typing immediately
+  el("qb0").focus();
+}
+
+function closeQuickEditor() {
+  el("quickEditor").classList.add("hidden");
+  el("quickEditBtn").textContent = "Edit";
+}
+
+function applyQuickEditorValues() {
+  quickBuys = ["qb0","qb1","qb2"].map(id => {
+    const v = parseFloat(el(id).value);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  });
+  quickSells = ["qs0","qs1","qs2"].map(id => {
+    const v = parseFloat(el(id).value);
+    return Number.isFinite(v) && v > 0 ? Math.min(100, v) : 0;
+  });
+  saveQuickTrade();
+  renderQuickTradePreview();
+  renderQuickBtns();
 }
 
 function setupQuickTradeUI() {
   renderQuickTradePreview();
 
   el("quickEditBtn").addEventListener("click", () => {
-    const editor = el("quickEditor");
-    const isOpen = !editor.classList.contains("hidden");
-    editor.classList.toggle("hidden", isOpen);
-    el("quickEditBtn").textContent = isOpen ? "Edit" : "Done";
-    if (!isOpen) {
-      // Populate inputs with current values
-      ["qb0","qb1","qb2"].forEach((id, i) => {
-        el(id).value = quickBuys[i] > 0 ? quickBuys[i] : "";
-      });
-      ["qs0","qs1","qs2"].forEach((id, i) => {
-        el(id).value = quickSells[i] > 0 ? quickSells[i] : "";
-      });
+    const isOpen = !el("quickEditor").classList.contains("hidden");
+    if (isOpen) {
+      applyQuickEditorValues();
+      closeQuickEditor();
+    } else {
+      openQuickEditor();
     }
   });
 
   el("quickSaveBtn").addEventListener("click", () => {
-    quickBuys  = ["qb0","qb1","qb2"].map(id => parseFloat(el(id).value) || 0);
-    quickSells = ["qs0","qs1","qs2"].map(id => {
-      const v = parseFloat(el(id).value) || 0;
-      return Math.min(100, Math.max(0, v));
+    applyQuickEditorValues();
+    closeQuickEditor();
+    toast("Quick buttons saved", false);
+  });
+
+  // Let Enter-to-save work from any of the six inputs, and Escape to
+  // close without discarding whatever was last saved.
+  ["qb0","qb1","qb2","qs0","qs1","qs2"].forEach(id => {
+    el(id).addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        applyQuickEditorValues();
+        closeQuickEditor();
+        toast("Quick buttons saved", false);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        closeQuickEditor();
+      }
     });
+  });
+
+  el("quickResetBtn").addEventListener("click", () => {
+    quickBuys  = [...DEFAULT_QUICK_BUYS];
+    quickSells = [...DEFAULT_QUICK_SELLS];
     saveQuickTrade();
     renderQuickTradePreview();
     renderQuickBtns();
-    el("quickEditor").classList.add("hidden");
-    el("quickEditBtn").textContent = "Edit";
-    toast("Quick buttons saved", false);
+    openQuickEditor();
+    toast("Quick buttons reset to defaults", false);
+  });
+}
+
+// ===========================================================
+// CHART MARKER TRANSPARENCY (per-trader preference)
+// ===========================================================
+let _opacitySaveTimer = null;
+
+function syncOpacitySliders() {
+  const buySlider = el("buyOpacitySlider"), sellSlider = el("sellOpacitySlider");
+  if (!buySlider || !sellSlider) return;
+  buySlider.value = Math.round(buyMarkerOpacity * 100);
+  sellSlider.value = Math.round(sellMarkerOpacity * 100);
+  el("buyOpacityValue").textContent  = `${Math.round(buyMarkerOpacity * 100)}%`;
+  el("sellOpacityValue").textContent = `${Math.round(sellMarkerOpacity * 100)}%`;
+}
+
+function saveMarkerOpacity() {
+  if (!currentUser) return;
+  clearTimeout(_opacitySaveTimer);
+  // Debounce writes while the slider is being dragged — only persist once
+  // the user pauses, instead of hammering Firestore on every tick.
+  _opacitySaveTimer = setTimeout(() => {
+    updateDoc(doc(usersCol, currentUser.uid), { buyMarkerOpacity, sellMarkerOpacity }).catch(() => {});
+  }, 400);
+}
+
+function setupMarkerOpacityUI() {
+  const buySlider = el("buyOpacitySlider"), sellSlider = el("sellOpacitySlider");
+  if (!buySlider || !sellSlider) return;
+  syncOpacitySliders();
+
+  buySlider.addEventListener("input", () => {
+    buyMarkerOpacity = Math.min(1, Math.max(0.1, parseInt(buySlider.value, 10) / 100));
+    el("buyOpacityValue").textContent = `${buySlider.value}%`;
+    drawTradeMarkers();
+    saveMarkerOpacity();
+  });
+
+  sellSlider.addEventListener("input", () => {
+    sellMarkerOpacity = Math.min(1, Math.max(0.1, parseInt(sellSlider.value, 10) / 100));
+    el("sellOpacityValue").textContent = `${sellSlider.value}%`;
+    drawTradeMarkers();
+    saveMarkerOpacity();
   });
 }
 

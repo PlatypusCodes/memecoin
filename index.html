@@ -263,7 +263,27 @@
                 <input class="trigger-input quick-cfg-input" id="qs2" type="number" min="1" max="100" step="1" placeholder="e.g. 100" />
               </div>
             </div>
-            <button class="btn btn-primary btn-block" id="quickSaveBtn" style="margin-top:10px">Save</button>
+            <div class="quick-editor-actions">
+              <button class="btn btn-ghost btn-block" id="quickResetBtn">Reset to defaults</button>
+              <button class="btn btn-primary btn-block" id="quickSaveBtn">Save</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Chart marker transparency -->
+        <div class="triggers-section" id="markerOpacitySection">
+          <div class="triggers-title-row">
+            <span class="triggers-title">Chart marker transparency</span>
+          </div>
+          <div class="opacity-row">
+            <span class="opacity-label buy">Buy</span>
+            <input type="range" id="buyOpacitySlider" class="opacity-slider buy" min="10" max="100" step="5" value="100" />
+            <span class="opacity-value" id="buyOpacityValue">100%</span>
+          </div>
+          <div class="opacity-row">
+            <span class="opacity-label sell">Sell</span>
+            <input type="range" id="sellOpacitySlider" class="opacity-slider sell" min="10" max="100" step="5" value="100" />
+            <span class="opacity-value" id="sellOpacityValue">100%</span>
           </div>
         </div>
 

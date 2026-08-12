@@ -30,11 +30,18 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys()
                .hasOnly(['balance', 'holdings', 'username', 'avatarUrl',
                          'costBasis', 'referredBy', 'referralBonuses',
-                         'pinnedItem', 'quickBuys', 'quickSells'])
+                         'pinnedItem', 'quickBuys', 'quickSells',
+                         'buyMarkerOpacity', 'sellMarkerOpacity'])
           && request.resource.data.balance is number
           && request.resource.data.balance >= 0
           && request.resource.data.holdings is number
-          && request.resource.data.holdings >= 0)
+          && request.resource.data.holdings >= 0
+          && request.resource.data.get('buyMarkerOpacity', 1) is number
+          && request.resource.data.get('buyMarkerOpacity', 1) >= 0
+          && request.resource.data.get('buyMarkerOpacity', 1) <= 1
+          && request.resource.data.get('sellMarkerOpacity', 1) is number
+          && request.resource.data.get('sellMarkerOpacity', 1) >= 0
+          && request.resource.data.get('sellMarkerOpacity', 1) <= 1)
         || isAdmin()
       );
 
@@ -57,7 +64,7 @@ service cloud.firestore {
       allow update: if request.auth != null
         && request.resource.data.price is number
         && request.resource.data.price > 0
-        && request.resource.data.price < 1e15;
+        && request.resource.data.price < 1000000000000000;
 
       allow delete: if false;
     }
