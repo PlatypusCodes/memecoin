@@ -407,6 +407,36 @@
   </div>
 </div>
 
+<!-- ============ ADMIN PORTAL ============ -->
+<div class="admin-portal hidden" id="adminPortal">
+  <div class="admin-portal-inner">
+    <div class="admin-header">
+      <span class="admin-title">⚡ Admin Portal</span>
+      <button class="admin-close" id="adminClose">✕</button>
+    </div>
+    <div class="admin-section">
+      <label class="admin-label">Give Cash</label>
+      <select class="admin-select" id="adminUserSelect">
+        <option value="">Loading users…</option>
+      </select>
+      <div class="admin-amount-row">
+        <input class="admin-input" id="adminCashAmount" type="number" placeholder="Amount ($)" min="1" step="100" value="1000" />
+        <button class="admin-btn admin-btn-give" id="adminGiveCash">💸 Give</button>
+      </div>
+    </div>
+    <div class="admin-section">
+      <label class="admin-label">Coin Controls</label>
+      <button class="admin-btn admin-btn-reset" id="adminResetCoin">🔄 Reset the Coin</button>
+      <p class="admin-hint">Wipes all price history and restarts from $STARTING_PRICE</p>
+    </div>
+    <div class="admin-section">
+      <label class="admin-label">Cheeky Boost</label>
+      <button class="admin-btn admin-btn-boost" id="adminBoost">🚀 Boost (30s)</button>
+      <p class="admin-hint" id="adminBoostStatus">Price only goes up for 30 seconds 👀</p>
+    </div>
+  </div>
+</div>
+
 <!-- ============ TOASTS ============ -->
 <div class="toast-stack" id="toastStack"></div>
 

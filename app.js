@@ -83,6 +83,12 @@ function stepPrice(price, tickIdx) {
   } else if (ratio > 8) {
     changePct -= 0.02;
   }
+  // Boost mode: if active, force price upward only
+  if (_boostModeActive && Date.now() < _boostModeEndTime) {
+    changePct = Math.abs(changePct) + 0.02;
+  } else if (_boostModeActive) {
+    _boostModeActive = false;
+  }
   return Math.max(price * (1 + changePct), STARTING_PRICE * 0.05);
 }
 
@@ -113,6 +119,13 @@ let lastPortfolioValue = portfolioHistory.length ? portfolioHistory[portfolioHis
 function _savePortfolioHistory() {
   try { localStorage.setItem("plty_portfolio_history", JSON.stringify(portfolioHistory.slice(-200))); } catch (_) {}
 }
+
+// Trade event markers for sparkline (buy/sell dots at exact chart position)
+let sparklineTradeEvents = [];
+
+// Boost mode: when active, price only goes up for 30 seconds
+let _boostModeActive = false;
+let _boostModeEndTime = 0;
 
 // Triggers / alerts state
 let stopLossPrice = null;
@@ -1042,6 +1055,49 @@ function drawSparkline() {
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
   ctx.stroke();
+
+  // Draw buy/sell trade event dots at exact sparkline positions
+  if (sparklineTradeEvents.length > 0 && pts.length >= 2) {
+    const firstTs = pts[0].ts;
+    const lastTs = pts[pts.length - 1].ts;
+    const tsRange = lastTs - firstTs || 1;
+
+    for (const evt of sparklineTradeEvents) {
+      // Only show events within sparkline time window
+      if (evt.ts < firstTs || evt.ts > lastTs + 10000) continue;
+      const xPos = ((evt.ts - firstTs) / tsRange) * w;
+      // Find closest portfolio point to get y position
+      let closestIdx = 0, closestDist = Infinity;
+      for (let i = 0; i < pts.length; i++) {
+        const d = Math.abs(pts[i].ts - evt.ts);
+        if (d < closestDist) { closestDist = d; closestIdx = i; }
+      }
+      const yPos = yFor(pts[closestIdx].value);
+      const isBuy = evt.type === "buy";
+      const dotColor = isBuy ? "#7cff6b" : "#ff3d6e";
+      const dotRgb = isBuy ? "124,255,107" : "255,61,110";
+
+      ctx.save();
+      ctx.shadowColor = `rgba(${dotRgb},0.8)`;
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.arc(xPos, yPos, 4, 0, Math.PI * 2);
+      ctx.fillStyle = dotColor;
+      ctx.fill();
+      ctx.strokeStyle = "rgba(11,14,12,0.9)";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.restore();
+
+      // Small label above/below
+      ctx.save();
+      ctx.font = "bold 8px JetBrains Mono, monospace";
+      ctx.fillStyle = dotColor;
+      ctx.textAlign = "center";
+      ctx.fillText(isBuy ? "B" : "S", xPos, isBuy ? yPos - 7 : yPos + 14);
+      ctx.restore();
+    }
+  }
 }
 
 // ===========================================================
@@ -2039,6 +2095,10 @@ async function confirmTrade() {
 
   const callingIt = el("callingItInput").value.trim().slice(0, 60);
 
+  // Capture the exact chart price and portfolio value at click moment
+  const tradePrice = _lastKnownPrice || marketState.price || STARTING_PRICE;
+  const tradeMode = sheetMode;
+
   try {
     _lastTradeWasLocal = false;
     await executeTrade(sheetMode, amt, sheetSellAll, callingIt);
@@ -2046,6 +2106,11 @@ async function confirmTrade() {
     if (!_lastTradeWasLocal) {
       toast(`${sheetMode === "buy" ? "Bought" : "Sold"} ${fmtUsd(amt)} of $PLTY`, false);
     }
+    // Record trade event on sparkline at the exact portfolio value when trade clicked
+    const currentTotal = (currentUser.balance || 0) + (currentUser.holdings || 0) * tradePrice;
+    sparklineTradeEvents.push({ ts: Date.now(), value: currentTotal, type: tradeMode });
+    if (sparklineTradeEvents.length > 50) sparklineTradeEvents = sparklineTradeEvents.slice(-50);
+    drawSparkline();
     sheetLastMax[sheetMode] = false; // reset so next open doesn't auto-fill stale max
     setTimeout(closeSheet, 450);
   } catch (e) {
@@ -2488,4 +2553,136 @@ el("profileChip").addEventListener("click", () => {
 el("logoutBtn").addEventListener("click", async () => {
   await auth.signOut();
   location.reload();
+});
+
+// ===========================================================
+// ADMIN PORTAL
+// ===========================================================
+const ADMIN_EMAIL = "detlaffcameron@gmail.com";
+let _adminPortalOpen = false;
+let _adminUsers = [];
+let _adminBoostTimer = null;
+
+function isAdminUser() {
+  if (!currentUser) return false;
+  // Check auth user email via Firebase auth
+  const firebaseUser = auth.currentUser;
+  return firebaseUser && firebaseUser.email && firebaseUser.email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+}
+
+async function openAdminPortal() {
+  if (!isAdminUser()) return;
+  _adminPortalOpen = true;
+  el("adminPortal").classList.remove("hidden");
+
+  // Load all users for the dropdown
+  try {
+    const snap = await getDocs(usersCol);
+    _adminUsers = snap.docs.map(d => ({ uid: d.id, ...d.data() })).sort((a, b) => (a.username || "").localeCompare(b.username || ""));
+    const sel = el("adminUserSelect");
+    sel.innerHTML = _adminUsers.map(u => `<option value="${u.uid}">${escapeHtml(u.username || u.uid)} (${fmtUsd(u.balance || 0)})</option>`).join("");
+  } catch (err) {
+    console.error("Admin: failed to load users", err);
+    el("adminUserSelect").innerHTML = "<option value=''>Failed to load users</option>";
+  }
+}
+
+function closeAdminPortal() {
+  _adminPortalOpen = false;
+  el("adminPortal").classList.add("hidden");
+}
+
+// Right-Alt key toggle
+document.addEventListener("keydown", (e) => {
+  if (e.code === "AltRight" || e.key === "AltGraph") {
+    e.preventDefault();
+    if (!isAdminUser()) return;
+    if (_adminPortalOpen) {
+      closeAdminPortal();
+    } else {
+      openAdminPortal();
+    }
+  }
+});
+
+el("adminClose").addEventListener("click", closeAdminPortal);
+
+// Give Cash
+el("adminGiveCash").addEventListener("click", async () => {
+  if (!isAdminUser()) return;
+  const uid = el("adminUserSelect").value;
+  const amount = parseFloat(el("adminCashAmount").value) || 0;
+  if (!uid || amount <= 0) { toast("Select a user and enter amount", true); return; }
+  try {
+    const uref = doc(usersCol, uid);
+    const snap = await getDoc(uref);
+    if (!snap.exists()) { toast("User not found", true); return; }
+    const newBalance = (snap.data().balance || 0) + amount;
+    await updateDoc(uref, { balance: newBalance });
+    const userName = snap.data().username || uid;
+    toast(`💸 Gave ${fmtUsd(amount)} to ${userName}`, false);
+    // Refresh dropdown
+    openAdminPortal();
+  } catch (err) {
+    toast("Failed to give cash: " + (err.message || err), true);
+  }
+});
+
+// Reset the Coin
+el("adminResetCoin").addEventListener("click", async () => {
+  if (!isAdminUser()) return;
+  if (!confirm("Reset the coin? This wipes all price history and restarts from the beginning. Are you sure?")) return;
+  try {
+    // Reset market state to starting values with a new tick index origin
+    const nowTick = Math.floor(Date.now() / TICK_MS);
+    await updateDoc(marketRef, {
+      price: STARTING_PRICE,
+      marketCap: STARTING_PRICE * TOTAL_SUPPLY,
+      lastTickIndex: nowTick,
+      priceOpen24h: STARTING_PRICE,
+      historyAnchor: { tickIdx: nowTick, price: STARTING_PRICE }
+    });
+    // Reset local state immediately
+    ticks = [];
+    _ticksGen++;
+    _lastKnownPrice = STARTING_PRICE;
+    _lastKnownTickIdx = nowTick;
+    _historyAnchor = { tickIdx: nowTick, price: STARTING_PRICE };
+    marketState.price = STARTING_PRICE;
+    marketState.marketCap = STARTING_PRICE * TOTAL_SUPPLY;
+    marketState.lastTickIndex = nowTick;
+    sparklineTradeEvents = [];
+    toast("🔄 Coin reset! Starting fresh from " + fmtPrice(STARTING_PRICE), false);
+    drawChart();
+  } catch (err) {
+    toast("Reset failed: " + (err.message || err), true);
+  }
+});
+
+// Cheeky Boost
+el("adminBoost").addEventListener("click", () => {
+  if (!isAdminUser()) return;
+  _boostModeActive = true;
+  _boostModeEndTime = Date.now() + 30000;
+  const btn = el("adminBoost");
+  const status = el("adminBoostStatus");
+  btn.classList.add("active");
+  toast("🚀 BOOST ACTIVATED — price only goes up for 30s!", false);
+
+  if (_adminBoostTimer) clearInterval(_adminBoostTimer);
+  let remaining = 30;
+  status.textContent = `🚀 BOOSTING — ${remaining}s remaining!`;
+  _adminBoostTimer = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(_adminBoostTimer);
+      _adminBoostTimer = null;
+      _boostModeActive = false;
+      btn.classList.remove("active");
+      status.textContent = "Price only goes up for 30 seconds 👀";
+      toast("Boost ended", false);
+    } else {
+      status.textContent = `🚀 BOOSTING — ${remaining}s remaining!`;
+    }
+  }, 1000);
 });
