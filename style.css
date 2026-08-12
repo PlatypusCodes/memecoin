@@ -344,6 +344,23 @@ a{ color:inherit; }
 .lb-value{ font-size:13px; font-weight:700; font-variant-numeric:tabular-nums; }
 .lb-value.up{ color:var(--toxic); }
 .lb-value.down{ color:var(--venom); }
+.lb-title-label{ font-size:11px; color:var(--text-faint); font-weight:600; letter-spacing:.04em; text-transform:uppercase; }
+.lb-item-rich{ align-items:flex-start; }
+.lb-item-rich img{ margin-top:2px; }
+.lb-detail-rows{ display:flex; flex-direction:column; gap:2px; margin-top:3px; }
+.lb-detail-row{ display:flex; justify-content:space-between; gap:8px; }
+.lb-detail-label{ font-size:10.5px; color:var(--text-faint); }
+.lb-detail-val{ font-size:10.5px; font-variant-numeric:tabular-nums; color:var(--text-dim); }
+.lb-overall .lb-detail-label{ color:var(--text); font-weight:700; font-size:11px; }
+.lb-overall .lb-detail-val{ color:var(--toxic); font-weight:700; font-size:11px; }
+
+/* edit profile */
+.edit-profile-preview{ display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+.edit-profile-preview img{ width:40px; height:40px; border-radius:50%; object-fit:cover; background:var(--surface-3); }
+.edit-profile-preview span{ font-size:14px; font-weight:700; }
+.edit-profile-label{ font-size:11px; color:var(--text-faint); margin-bottom:3px; display:block; }
+.edit-profile-editor{ display:flex; flex-direction:column; margin-top:10px; }
+.edit-profile-status{ font-size:11.5px; margin-top:8px; min-height:16px; }
 
 /* wallet */
 .wallet-card{

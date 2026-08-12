@@ -199,12 +199,7 @@
       <!-- LEADERBOARD PANEL -->
       <div class="panel hidden" id="panelLeaderboard">
         <div class="lb-header">
-          <div class="lb-sort-tabs">
-            <button class="lb-sort active" data-sort="pnl">P&amp;L</button>
-            <button class="lb-sort" data-sort="portfolio">Portfolio</button>
-            <button class="lb-sort" data-sort="volume">Volume</button>
-          </div>
-          <span class="lb-reset-note" id="lbResetNote">Resets weekly</span>
+          <span class="lb-title-label">Top Traders by Portfolio Value</span>
         </div>
         <ul class="lb-list" id="lbList"></ul>
       </div>
@@ -334,6 +329,29 @@
           </div>
           <button class="btn btn-ghost btn-block" id="alertSetBtn">Enable alerts</button>
           <div class="alert-status" id="alertStatus"></div>
+        </div>
+
+        <!-- Edit Profile -->
+        <div class="triggers-section" id="editProfileSection">
+          <div class="triggers-title-row">
+            <span class="triggers-title">Edit Profile</span>
+            <button class="trigger-edit-btn" id="editProfileBtn">Edit</button>
+          </div>
+          <div class="edit-profile-editor hidden" id="editProfileEditor">
+            <div class="edit-profile-preview">
+              <img id="editAvatarPreview" src="" alt="" />
+              <span id="editNamePreview">—</span>
+            </div>
+            <label class="edit-profile-label">Display Name</label>
+            <input id="editDisplayName" type="text" maxlength="18" placeholder="e.g. bill_hunter" class="trigger-input" autocomplete="off" />
+            <label class="edit-profile-label" style="margin-top:8px">Avatar URL</label>
+            <input id="editAvatarUrl" type="url" placeholder="https://…/picture.png" class="trigger-input" autocomplete="off" />
+            <div class="quick-editor-actions" style="margin-top:10px">
+              <button class="btn btn-ghost btn-block" id="editProfileCancelBtn">Cancel</button>
+              <button class="btn btn-primary btn-block" id="editProfileSaveBtn">Save</button>
+            </div>
+            <div class="edit-profile-status" id="editProfileStatus"></div>
+          </div>
         </div>
 
         <button class="btn btn-ghost btn-block" id="logoutBtn" style="margin-top:10px">Switch trader</button>

@@ -1246,51 +1246,59 @@ function renderFeed() {
 // ===========================================================
 // RENDER: leaderboard
 // ===========================================================
-document.querySelectorAll(".lb-sort").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".lb-sort").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-    lbSort = btn.dataset.sort;
-    renderLeaderboard();
-  });
-});
+let _lbUserCache = [];
+let _lbFetchTs = 0;
 
-function renderLeaderboard() {
+async function renderLeaderboard() {
   const list = el("lbList");
   if (!list) return;
-  const arr = [...traderMap.entries()];
-  if (!arr.length) {
+
+  // Refresh user data at most every 15 seconds
+  const now = Date.now();
+  if (now - _lbFetchTs > 15000) {
+    _lbFetchTs = now;
+    try {
+      const snap = await getDocs(usersCol);
+      _lbUserCache = snap.docs.map(d => ({ uid: d.id, ...d.data() }));
+    } catch (_) { /* keep old cache */ }
+  }
+
+  if (!_lbUserCache.length) {
     list.innerHTML = `<li class="feed-empty">No traders yet.</li>`;
     return;
   }
 
   const price = marketState.price || STARTING_PRICE;
-  const sorted = arr.sort((a, b) => {
-    if (lbSort === "volume") return b[1].volume - a[1].volume;
-    // For portfolio/pnl we need on-chain data — use volume as proxy since we
-    // don't store per-user portfolio snapshots in traderMap. Real implementation
-    // would subscribe to all users. Using volume * rough_ratio as heuristic.
-    if (lbSort === "portfolio") return b[1].volume - a[1].volume;
-    if (lbSort === "pnl") return (b[1].buys - b[1].sells) - (a[1].buys - a[1].sells);
-    return b[1].volume - a[1].volume;
-  });
+
+  const ranked = _lbUserCache
+    .map(u => {
+      const cash = u.balance || 0;
+      const held = u.holdings || 0;
+      const pltyValue = held * price;
+      const overall = cash + pltyValue;
+      const tradeRec = traderMap.get(u.uid) || {};
+      return { uid: u.uid, username: u.username || "anon", avatarUrl: u.avatarUrl, cash, held, pltyValue, overall, tradeRec };
+    })
+    .sort((a, b) => b.overall - a.overall)
+    .slice(0, 50);
 
   const rankClasses = ["gold", "silver", "bronze"];
-  list.innerHTML = sorted.slice(0, 50).map(([uid, r], i) => {
+  list.innerHTML = ranked.map((r, i) => {
     const rankClass = i < 3 ? rankClasses[i] : "";
     const rankLabel = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`;
-    // Show volume as the value
-    const valueText = fmtCompact(r.volume);
-    const isUp = r.buys >= r.sells;
     return `
-      <li class="lb-item" data-uid="${uid}">
+      <li class="lb-item lb-item-rich" data-uid="${r.uid}">
         <span class="lb-rank ${rankClass}">${rankLabel}</span>
         <img src="${r.avatarUrl || DEFAULT_AVATAR}" onerror="this.src='${DEFAULT_AVATAR}'" alt="" />
         <div class="lb-main">
           <span class="lb-name">${escapeHtml(r.username)}</span>
-          <span class="lb-sub">${r.buys}B · ${r.sells}S · ${timeAgo(r.lastTs)}</span>
+          <div class="lb-detail-rows">
+            <div class="lb-detail-row"><span class="lb-detail-label">Cash</span><span class="lb-detail-val">${fmtUsd(r.cash)}</span></div>
+            <div class="lb-detail-row"><span class="lb-detail-label">$PLTY Held</span><span class="lb-detail-val">${r.held.toFixed(8)}</span></div>
+            <div class="lb-detail-row"><span class="lb-detail-label">$PLTY Value</span><span class="lb-detail-val">${fmtUsd(r.pltyValue)}</span></div>
+            <div class="lb-detail-row lb-overall"><span class="lb-detail-label">Overall</span><span class="lb-detail-val">${fmtUsd(r.overall)}</span></div>
+          </div>
         </div>
-        <span class="lb-value ${isUp ? "up" : "down"}">${valueText}</span>
       </li>`;
   }).join("");
 
@@ -1365,6 +1373,7 @@ document.querySelectorAll(".panel-tab").forEach(btn => {
       el("panel" + p[0].toUpperCase() + p.slice(1)).classList.toggle("hidden", p !== target);
     });
     if (target === "wallet") drawSparkline();
+    if (target === "leaderboard") renderLeaderboard();
   });
 });
 
@@ -2751,6 +2760,74 @@ el("profileChip").addEventListener("click", () => {
 el("logoutBtn").addEventListener("click", async () => {
   await auth.signOut();
   location.reload();
+});
+
+// ===========================================================
+// EDIT PROFILE (display name + avatar)
+// ===========================================================
+el("editProfileBtn").addEventListener("click", () => {
+  const editor = el("editProfileEditor");
+  const isOpen = !editor.classList.contains("hidden");
+  if (isOpen) {
+    editor.classList.add("hidden");
+    el("editProfileBtn").textContent = "Edit";
+    return;
+  }
+  // Pre-fill with current values
+  el("editDisplayName").value = currentUser?.username || "";
+  el("editAvatarUrl").value = currentUser?.avatarUrl || "";
+  el("editAvatarPreview").src = currentUser?.avatarUrl || DEFAULT_AVATAR;
+  el("editNamePreview").textContent = currentUser?.username || "—";
+  el("editProfileStatus").textContent = "";
+  editor.classList.remove("hidden");
+  el("editProfileBtn").textContent = "Close";
+});
+
+el("editProfileCancelBtn").addEventListener("click", () => {
+  el("editProfileEditor").classList.add("hidden");
+  el("editProfileBtn").textContent = "Edit";
+});
+
+// Live preview while typing
+el("editDisplayName").addEventListener("input", () => {
+  el("editNamePreview").textContent = el("editDisplayName").value.trim() || "—";
+});
+el("editAvatarUrl").addEventListener("input", () => {
+  const url = el("editAvatarUrl").value.trim();
+  el("editAvatarPreview").src = url || DEFAULT_AVATAR;
+});
+el("editAvatarPreview").addEventListener("error", function() { this.src = DEFAULT_AVATAR; });
+
+el("editProfileSaveBtn").addEventListener("click", async () => {
+  if (!currentUser) return;
+  const newName = el("editDisplayName").value.trim().slice(0, 18);
+  const newAvatar = el("editAvatarUrl").value.trim() || DEFAULT_AVATAR;
+  const statusEl = el("editProfileStatus");
+
+  if (!newName) { statusEl.textContent = "Name cannot be empty."; statusEl.style.color = "var(--red)"; return; }
+
+  el("editProfileSaveBtn").disabled = true;
+  el("editProfileSaveBtn").textContent = "Saving…";
+
+  try {
+    const uref = doc(usersCol, currentUser.uid);
+    await updateDoc(uref, { username: newName, avatarUrl: newAvatar });
+    currentUser.username = newName;
+    currentUser.avatarUrl = newAvatar;
+    renderProfile();
+    statusEl.textContent = "✓ Saved!";
+    statusEl.style.color = "var(--green)";
+    setTimeout(() => {
+      el("editProfileEditor").classList.add("hidden");
+      el("editProfileBtn").textContent = "Edit";
+    }, 1200);
+  } catch (err) {
+    statusEl.textContent = "Save failed: " + (err.message || err);
+    statusEl.style.color = "var(--red)";
+  } finally {
+    el("editProfileSaveBtn").disabled = false;
+    el("editProfileSaveBtn").textContent = "Save";
+  }
 });
 
 // ===========================================================
