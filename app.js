@@ -1659,16 +1659,6 @@ function drawTradeMarkers() {
   // Only show trades that fall within the visible candle window.
   const visible = trades.filter(t => t.ts >= firstTs && t.ts < lastTs).slice(0, 120);
 
-  // For each user, only show their most recent trade so their avatar marker
-  // always reflects where they last traded, not a historical position.
-  const latestPerUser = new Map();
-  for (const t of visible) {
-    if (!latestPerUser.has(t.uid) || t.ts > latestPerUser.get(t.uid).ts) {
-      latestPerUser.set(t.uid, t);
-    }
-  }
-  const deduped = [...latestPerUser.values()];
-
   const bucketToIdx = new Map();
   candles.forEach((c, i) => bucketToIdx.set(c.ts, i));
 
@@ -1676,7 +1666,7 @@ function drawTradeMarkers() {
   // Track how many markers land on each candle index per side so we can stack them
   const slotCount = { buy: new Map(), sell: new Map() };
 
-  for (const t of deduped) {
+  for (const t of visible) {
     const tradeBucket = Math.floor(t.ts / bucketMs) * bucketMs;
     let idx = bucketToIdx.has(tradeBucket)
       ? bucketToIdx.get(tradeBucket)
