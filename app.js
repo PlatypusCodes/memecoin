@@ -660,16 +660,8 @@ function flushLeaderState() {
     const projectId = firebaseConfig.projectId;
     const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/market/state`;
 
-    const nowTick  = Math.floor(Date.now() / TICK_MS);
-    const startIdx = Math.max(0, nowTick - MAX_TICK_HISTORY + 1);
-    let anchorPrice = _lastKnownPrice;
-    if (ticks.length > 0 && ticks[0].ts <= startIdx * TICK_MS) {
-      const startTs = startIdx * TICK_MS;
-      const exact   = ticks.find(t => t.ts === startTs);
-      const nearest = ticks.find(t => t.ts >= startTs);
-      anchorPrice   = (exact || nearest || ticks[ticks.length - 1]).price;
-    }
-
+    // Store the live tip as the anchor (not startIdx) so the next session
+    // always has a valid chain entry point regardless of how much time passes.
     const fields = {
       price:         { doubleValue: _lastKnownPrice },
       marketCap:     { doubleValue: _lastKnownPrice * TOTAL_SUPPLY },
@@ -677,8 +669,8 @@ function flushLeaderState() {
       historyAnchor: {
         mapValue: {
           fields: {
-            tickIdx: { integerValue: String(startIdx) },
-            price:   { doubleValue: anchorPrice }
+            tickIdx: { integerValue: String(_lastKnownTickIdx) },
+            price:   { doubleValue: _lastKnownPrice }
           }
         }
       }
@@ -755,47 +747,41 @@ function rebuildLocalTicks(checkTriggersOnCatchup) {
   let seedIdx;    // the tick whose price is `p` (we step from seedIdx+1 onward)
 
   // --- Candidate 1: historyAnchor ---
-  // The anchor is normally kept fresh (refreshed every ~5 min by the leader),
-  // so the walk from it to startIdx is normally tiny. But if the app sat idle
-  // (no leader tab open) for a long stretch, or this is a doc left over from
-  // an earlier session, the anchor can be arbitrarily stale -- so this walk
-  // needs the same hard cap as candidate 3 below, or a stale-enough anchor
-  // reproduces the exact same freeze via a different path.
-  const ANCHOR_WALK_CAP = MAX_TICK_HISTORY; // never walk further than this
-  if (_historyAnchor && _historyAnchor.tickIdx <= startIdx &&
-      (startIdx - _historyAnchor.tickIdx) <= ANCHOR_WALK_CAP) {
-    // Walk forward from the anchor to startIdx (gap is usually tiny).
+  // Now always stored at the live tip (tickIdx = _lastKnownTickIdx at write
+  // time), so it can be ahead of, at, or behind startIdx. All three cases are
+  // handled: behind → walk forward to startIdx; at/ahead → use as mid-chain
+  // entry and walk forward from there, collecting only ticks >= startIdx.
+  // Hard cap: if the anchor is more than MAX_TICK_HISTORY ticks behind
+  // startIdx it's too stale to be useful — fall through.
+  const ANCHOR_WALK_CAP = MAX_TICK_HISTORY;
+  if (_historyAnchor && (nowTick - _historyAnchor.tickIdx) <= ANCHOR_WALK_CAP) {
     p       = _historyAnchor.price;
     seedIdx = _historyAnchor.tickIdx;
+    // Walk forward from anchor to just before startIdx (no-op when anchor >= startIdx).
     for (let i = seedIdx + 1; i < startIdx; i++) {
       p = stepPrice(p, i);
     }
-    seedIdx = startIdx - 1; // after the walk, p is the price at startIdx-1's step
-                             // so the collection loop below starts at startIdx.
+    // If anchor is past startIdx, the collection loop below starts at anchor+1
+    // and we push a synthetic entry for startIdx using the walked price — the
+    // chart only needs the visible window, so prices before startIdx are discarded.
+    seedIdx = Math.max(seedIdx, startIdx - 1);
   }
-  // --- Candidate 2: live-tip anchor (only when tip is before startIdx) ---
-  else if (_lastKnownTickIdx < startIdx && (startIdx - _lastKnownTickIdx) <= ANCHOR_WALK_CAP) {
-    // Walk forward from the known live price to startIdx.
+  // --- Candidate 2: live-tip (only when tip is before startIdx and no anchor) ---
+  else if (_lastKnownTickIdx >= 0 && _lastKnownTickIdx < startIdx &&
+           (startIdx - _lastKnownTickIdx) <= ANCHOR_WALK_CAP) {
     p       = _lastKnownPrice;
     seedIdx = _lastKnownTickIdx;
   }
-  // --- Candidate 3: seed from the current known price ---
-  // Covers the case where the live tip is past startIdx AND no stored anchor
-  // exists yet (e.g. fresh deploy before any leader write). tickIdx values are
-  // absolute (Date.now()/TICK_MS), currently in the hundreds of millions, so
-  // walking stepPrice from tick 0 up to startIdx here would be ~500M+
-  // iterations and hang the tab for minutes. We don't need bit-exact history
-  // for this fallback-only window -- seed it flat from the current price
-  // instead; it self-corrects to the real anchor within a few minutes once
-  // the leader writes one.
+  // --- Candidate 3: flat seed (last resort, no usable anchor) ---
+  // Only reached on a completely fresh deploy before any leader write.
+  // Seeds flat from current price; self-corrects once the leader writes an anchor.
   else {
     p = (marketState && marketState.price) ? marketState.price : STARTING_PRICE;
-    seedIdx = startIdx - 1; // collection loop will start at startIdx
+    seedIdx = startIdx - 1;
   }
 
-  // Pre-walk from seedIdx to just before startIdx (candidate 2 only).
-  // Candidates 1 and 3 already finished their pre-walk above and set
-  // seedIdx = startIdx - 1, so this block is a no-op for them.
+  // Pre-walk from seedIdx to just before startIdx (Candidate 2 only;
+  // Candidates 1 and 3 already landed at startIdx - 1 above).
   if (seedIdx >= 0 && seedIdx < startIdx - 1) {
     for (let i = seedIdx + 1; i < startIdx; i++) {
       p = stepPrice(p, i);
@@ -893,41 +879,15 @@ async function maybeWriteMarket() {
   const price   = _lastKnownPrice;
   const tickIdx = _lastKnownTickIdx;
 
-  // Decide whether to refresh the historyAnchor this write cycle.
-  // The anchor is the price at startIdx = nowTick - MAX_TICK_HISTORY + 1,
-  // giving every tab a known (tickIdx, price) pair to reconstruct the full
-  // visible tick window without an expensive walk from STARTING_PRICE at tick 0.
-  _anchorWriteCounter++;
-  let anchorUpdate = {};
-  if (_anchorWriteCounter >= ANCHOR_WRITE_EVERY) {
-    _anchorWriteCounter = 0;
-    const nowTick  = Math.floor(Date.now() / TICK_MS);
-    const startIdx = Math.max(0, nowTick - MAX_TICK_HISTORY + 1);
-    // Walk forward from the current ticks[] array if startIdx is in range,
-    // otherwise derive from STARTING_PRICE (cold path, happens once on a fresh
-    // deploy before any ticks[] have been accumulated).
-    let anchorPrice;
-    if (ticks.length > 0 && ticks[0].ts <= startIdx * TICK_MS) {
-      // Find the tick whose ts exactly matches startIdx * TICK_MS.
-      // ticks.find(t => t.ts >= startTs) can overshoot by one tick on a bucket
-      // boundary, so prefer an exact match first and fall back to the nearest entry.
-      const startTs  = startIdx * TICK_MS;
-      const exact    = ticks.find(t => t.ts === startTs);
-      const nearest  = ticks.find(t => t.ts >= startTs);
-      anchorPrice    = (exact || nearest || ticks[ticks.length - 1]).price;
-    } else {
-      // ticks[] doesn't reach back to startIdx. tickIdx values are absolute
-      // (Date.now()/TICK_MS, currently hundreds of millions), so stepping from
-      // STARTING_PRICE at tick 0 up to startIdx here is NOT bounded by
-      // MAX_TICK_HISTORY -- it would be ~500M+ iterations and hang the tab.
-      // Fall back to the current known price instead; the anchor will refine
-      // itself on the next write cycle once ticks[] catches up.
-      anchorPrice = _lastKnownPrice || marketState.price || STARTING_PRICE;
-    }
-    anchorUpdate = { historyAnchor: { tickIdx: startIdx, price: anchorPrice } };
-    // Also update local so other tabs get it instantly via the Firestore snapshot.
-    _historyAnchor = { tickIdx: startIdx, price: anchorPrice };
-  }
+  // Always write the live tip as the historyAnchor on every throttled write.
+  // Storing the tip (tickIdx, price) means any new session can always use
+  // Candidate 2 in rebuildLocalTicks: walk forward from tip to nowTick.
+  // The old approach stored the price at startIdx (oldest visible tick) which
+  // breaks when the next session opens after enough time has passed that
+  // startIdx has advanced past the stored tickIdx — causing Candidate 3
+  // (flat seed from current price) to fire and produce a divergent price chain.
+  const anchorUpdate = { historyAnchor: { tickIdx, price } };
+  _historyAnchor = { tickIdx, price };
 
   // Refresh priceOpen24h once per calendar day (UTC).
   // The stored value is used by renderTopStats() for the 24h % change display.
