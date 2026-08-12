@@ -1055,49 +1055,6 @@ function drawSparkline() {
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
   ctx.stroke();
-
-  // Draw buy/sell trade event dots at exact sparkline positions
-  if (sparklineTradeEvents.length > 0 && pts.length >= 2) {
-    const firstTs = pts[0].ts;
-    const lastTs = pts[pts.length - 1].ts;
-    const tsRange = lastTs - firstTs || 1;
-
-    for (const evt of sparklineTradeEvents) {
-      // Only show events within sparkline time window
-      if (evt.ts < firstTs || evt.ts > lastTs + 10000) continue;
-      const xPos = ((evt.ts - firstTs) / tsRange) * w;
-      // Find closest portfolio point to get y position
-      let closestIdx = 0, closestDist = Infinity;
-      for (let i = 0; i < pts.length; i++) {
-        const d = Math.abs(pts[i].ts - evt.ts);
-        if (d < closestDist) { closestDist = d; closestIdx = i; }
-      }
-      const yPos = yFor(pts[closestIdx].value);
-      const isBuy = evt.type === "buy";
-      const dotColor = isBuy ? "#7cff6b" : "#ff3d6e";
-      const dotRgb = isBuy ? "124,255,107" : "255,61,110";
-
-      ctx.save();
-      ctx.shadowColor = `rgba(${dotRgb},0.8)`;
-      ctx.shadowBlur = 8;
-      ctx.beginPath();
-      ctx.arc(xPos, yPos, 4, 0, Math.PI * 2);
-      ctx.fillStyle = dotColor;
-      ctx.fill();
-      ctx.strokeStyle = "rgba(11,14,12,0.9)";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      ctx.restore();
-
-      // Small label above/below
-      ctx.save();
-      ctx.font = "bold 8px JetBrains Mono, monospace";
-      ctx.fillStyle = dotColor;
-      ctx.textAlign = "center";
-      ctx.fillText(isBuy ? "B" : "S", xPos, isBuy ? yPos - 7 : yPos + 14);
-      ctx.restore();
-    }
-  }
 }
 
 // ===========================================================
@@ -1718,9 +1675,11 @@ function drawTradeMarkers() {
 
     const x = xFor(idx);
     const candle = candles[idx];
-    const anchorPrice = t.price != null && t.price >= min && t.price <= max
-      ? t.price
-      : candle.close;
+    const anchorPrice = (t.displayPrice != null && t.displayPrice >= min && t.displayPrice <= max)
+      ? t.displayPrice
+      : (t.price != null && t.price >= min && t.price <= max)
+        ? t.price
+        : candle.close;
     const priceY = yFor(anchorPrice);
 
     // Place avatars above candle for buys, below for sells, stacked if multiple
@@ -2095,10 +2054,6 @@ async function confirmTrade() {
 
   const callingIt = el("callingItInput").value.trim().slice(0, 60);
 
-  // Capture the exact chart price and portfolio value at click moment
-  const tradePrice = _lastKnownPrice || marketState.price || STARTING_PRICE;
-  const tradeMode = sheetMode;
-
   try {
     _lastTradeWasLocal = false;
     await executeTrade(sheetMode, amt, sheetSellAll, callingIt);
@@ -2106,11 +2061,6 @@ async function confirmTrade() {
     if (!_lastTradeWasLocal) {
       toast(`${sheetMode === "buy" ? "Bought" : "Sold"} ${fmtUsd(amt)} of $PLTY`, false);
     }
-    // Record trade event on sparkline at the exact portfolio value when trade clicked
-    const currentTotal = (currentUser.balance || 0) + (currentUser.holdings || 0) * tradePrice;
-    sparklineTradeEvents.push({ ts: Date.now(), value: currentTotal, type: tradeMode });
-    if (sparklineTradeEvents.length > 50) sparklineTradeEvents = sparklineTradeEvents.slice(-50);
-    drawSparkline();
     sheetLastMax[sheetMode] = false; // reset so next open doesn't auto-fill stale max
     setTimeout(closeSheet, 450);
   } catch (e) {
@@ -2156,7 +2106,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
         const tradeDoc = doc(tradesCol);
         tx.set(tradeDoc, {
           uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
-          type: "buy", usdAmount, coinAmount, price, callingIt: callingIt || "",
+          type: "buy", usdAmount, coinAmount, price, displayPrice: livePrice, callingIt: callingIt || "",
           timestamp: serverTimestamp()
         });
       } else {
@@ -2182,7 +2132,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
         const tradeDoc = doc(tradesCol);
         tx.set(tradeDoc, {
           uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
-          type: "sell", usdAmount: usdReceived, coinAmount, price, callingIt: callingIt || "",
+          type: "sell", usdAmount: usdReceived, coinAmount, price, displayPrice: priceNow, callingIt: callingIt || "",
           timestamp: serverTimestamp()
         });
       }
