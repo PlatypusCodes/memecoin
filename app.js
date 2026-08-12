@@ -1842,10 +1842,7 @@ function drawTradeMarkers() {
     const { _x: x, _y: y, _priceY: priceY, _isBuy: isBuy } = m;
     const color = isBuy ? (cssVar("--toxic") || "#7cff6b") : (cssVar("--venom") || "#ff3d6e");
     const rgb   = isBuy ? "124,255,107" : "255,61,110";
-    const markerAlpha = isBuy ? buyMarkerOpacity : sellMarkerOpacity;
-
     ctx.save();
-    ctx.globalAlpha = markerAlpha;
 
     // Draw stem line from avatar to price point
     ctx.save();
@@ -2074,6 +2071,9 @@ function openSheet(mode) {
 
   renderSheetAmount();
   renderSheetConvert();
+  // Apply the marker opacity setting to the trade sheet itself
+  const sheetOpacity = mode === "buy" ? buyMarkerOpacity : sellMarkerOpacity;
+  el("tradeSheet").style.opacity = sheetOpacity;
   el("sheetBackdrop").classList.remove("hidden");
 }
 function closeSheet() {
@@ -2498,14 +2498,14 @@ function setupMarkerOpacityUI() {
   buySlider.addEventListener("input", () => {
     buyMarkerOpacity = Math.min(1, Math.max(0.1, parseInt(buySlider.value, 10) / 100));
     el("buyOpacityValue").textContent = `${buySlider.value}%`;
-    drawTradeMarkers();
+    if (sheetMode === "buy") el("tradeSheet").style.opacity = buyMarkerOpacity;
     saveMarkerOpacity();
   });
 
   sellSlider.addEventListener("input", () => {
     sellMarkerOpacity = Math.min(1, Math.max(0.1, parseInt(sellSlider.value, 10) / 100));
     el("sellOpacityValue").textContent = `${sellSlider.value}%`;
-    drawTradeMarkers();
+    if (sheetMode === "sell") el("tradeSheet").style.opacity = sellMarkerOpacity;
     saveMarkerOpacity();
   });
 }
