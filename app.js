@@ -2353,6 +2353,7 @@ function renderQuickBtns() {
         sheetAmount = String(amt);
         renderSheetAmount();
         renderSheetConvert();
+        confirmTrade(); // quick buttons trade instantly — no slide-to-confirm needed
       });
       container.appendChild(b);
     });
@@ -2369,6 +2370,7 @@ function renderQuickBtns() {
         sheetAmount = String(Math.floor((usdVal * pct / 100) * 100) / 100);
         renderSheetAmount();
         renderSheetConvert();
+        confirmTrade(); // quick buttons trade instantly — no slide-to-confirm needed
       });
       container.appendChild(b);
     });
