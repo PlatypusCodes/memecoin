@@ -498,6 +498,7 @@ function boot() {
   setupAlertUI();
   setupQuickTradeUI();
   setupMarkerOpacityUI();
+  setupNotifPrefs();
 }
 
 // ===========================================================
@@ -1992,13 +1993,16 @@ function drawWhaleAnnotations(candles, xFor, yFor, bucketMs, firstTs, lastTs) {
     const tw = ctx.measureText(label).width;
     const pw = tw + 10, ph = 16;
 
-    // Position: above high for buys, below low for sells
+    // Position: above the avatar marker for buys (AVATAR_R=9, STEM=8, stacking gap),
+    // below the avatar marker for sells. Add 36px extra clearance so the pill
+    // never overlaps the avatar circle drawn by drawTradeMarkers().
+    const AVATAR_CLEARANCE = 36;
     let py;
     if (isBuy) {
-      py = yFor(candle.high) - 28;
+      py = yFor(candle.high) - 28 - AVATAR_CLEARANCE - ph;
       py = Math.max(padT + 2, py);
     } else {
-      py = yFor(candle.low) + 12;
+      py = yFor(candle.low) + 12 + AVATAR_CLEARANCE;
       py = Math.min(h - padB - ph - 2, py);
     }
     const px = Math.min(Math.max(x - pw / 2, 4), chartLayout.w - pw - 4);
@@ -2317,7 +2321,7 @@ async function confirmTrade(isQuick = false) {
       const verb = sheetMode === "buy" ? "Bought" : "Sold";
       toast(isQuick ? `⚡ Instantly ${verb.toLowerCase()} ${fmtUsd(amt)} of $PLTY` : `${verb} ${fmtUsd(amt)} of $PLTY`, false);
       // Offer shareable trade card after a meaningful trade
-      if (amt >= 10) {
+      if (amt >= 10 && _prefs.sharePrompt) {
         const tradeSnap = { type: sheetMode, usdAmount: amt, price: marketState.price || STARTING_PRICE };
         setTimeout(() => showShareTradePrompt(tradeSnap), 600);
       }
@@ -2905,117 +2909,151 @@ function generateTradeCard(trade) {
   const avatarUrl = currentUser?.avatarUrl || DEFAULT_AVATAR;
   const realizedPnl = currentUser?.realizedPnl || 0;
   const rSign = realizedPnl >= 0 ? "+" : "";
+  const borderColor = isBuy ? "#7cff6b" : "#ff3d6e";
 
-  // Draw onto an offscreen canvas
-  const W = 520, H = 280;
+  // Preload both images before drawing so neither appears as an empty circle
+  function loadImg(src) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = src;
+    });
+  }
+
+  Promise.all([loadImg(DEFAULT_AVATAR), loadImg(avatarUrl)]).then(([logoImg, avatarImg]) => {
+    _drawTradeCard({ trade, isBuy, price, username, realizedPnl, rSign, borderColor, logoImg, avatarImg });
+  });
+}
+
+function _drawTradeCard({ trade, isBuy, price, username, realizedPnl, rSign, borderColor, logoImg, avatarImg }) {
+  const W = 600, H = 300;
   const oc = document.createElement("canvas");
-  oc.width = W * 2; oc.height = H * 2; // retina
+  oc.width = W * 2; oc.height = H * 2;
   const c = oc.getContext("2d");
   c.scale(2, 2);
 
-  // Background
+  // ---- Background ----
   const grad = c.createLinearGradient(0, 0, W, H);
   grad.addColorStop(0, "#0b0e0c");
   grad.addColorStop(1, "#111714");
   c.fillStyle = grad;
-  c.beginPath(); roundRectPath(c, 0, 0, W, H, 16); c.fill();
+  c.beginPath(); roundRectPath(c, 0, 0, W, H, 18); c.fill();
 
-  // Accent border
-  const borderColor = isBuy ? "#7cff6b" : "#ff3d6e";
-  c.strokeStyle = borderColor;
-  c.lineWidth = 2;
-  c.beginPath(); roundRectPath(c, 1, 1, W - 2, H - 2, 15); c.stroke();
-
-  // Glow
+  // ---- Border + glow ----
   c.save();
   c.shadowColor = borderColor;
-  c.shadowBlur = 32;
+  c.shadowBlur = 24;
   c.strokeStyle = borderColor;
-  c.lineWidth = 1;
-  c.beginPath(); roundRectPath(c, 2, 2, W - 4, H - 4, 14); c.stroke();
+  c.lineWidth = 2;
+  c.beginPath(); roundRectPath(c, 1, 1, W - 2, H - 2, 17); c.stroke();
   c.restore();
 
-  // Coin logo circle
-  const logoImg = getAvatarImg(DEFAULT_AVATAR);
+  // ---- Top bar: coin logo ----
+  const LX = 28, LY = 28, LR = 22;
   c.save();
-  c.beginPath(); c.arc(44, 44, 22, 0, Math.PI * 2); c.fillStyle = "#1a1f1d"; c.fill();
+  c.beginPath(); c.arc(LX + LR, LY + LR, LR, 0, Math.PI * 2);
+  c.fillStyle = "#1a1f1d"; c.fill();
   c.strokeStyle = borderColor; c.lineWidth = 2; c.stroke();
-  if (logoImg.complete && logoImg.naturalWidth) {
-    c.beginPath(); c.arc(44, 44, 20, 0, Math.PI * 2); c.clip();
-    c.drawImage(logoImg, 24, 24, 40, 40);
+  if (logoImg) {
+    c.beginPath(); c.arc(LX + LR, LY + LR, LR - 2, 0, Math.PI * 2); c.clip();
+    c.drawImage(logoImg, LX + 2, LY + 2, (LR - 2) * 2, (LR - 2) * 2);
   }
   c.restore();
 
-  // $PLTY label
-  c.font = "bold 13px 'Space Grotesk', sans-serif";
-  c.fillStyle = "#fff";
-  c.textBaseline = "middle";
-  c.fillText("$PLTY · Platypus", 76, 37);
+  // ---- Coin name ----
+  const nameX = LX + LR * 2 + 10;
+  c.font = "bold 14px 'Space Grotesk', sans-serif";
+  c.fillStyle = "#ffffff";
+  c.textBaseline = "top";
+  c.fillText("$PLTY · Platypus", nameX, LY + 4);
   c.font = "11px 'Space Grotesk', sans-serif";
   c.fillStyle = "#8a9a8f";
-  c.fillText("platypuscodes.github.io/memecoin", 76, 53);
+  c.fillText("platypuscodes.github.io/memecoin", nameX, LY + 24);
 
-  // Action pill
-  const pillW = 130, pillH = 30;
-  const pillX = W - pillW - 24, pillY = 24;
+  // ---- Action pill (top right) ----
+  const pillW = 128, pillH = 32, pillX = W - pillW - 24, pillY = LY + 4;
   c.save();
   roundRectPath(c, pillX, pillY, pillW, pillH, 8);
   c.fillStyle = isBuy ? "rgba(124,255,107,0.15)" : "rgba(255,61,110,0.15)";
   c.fill();
   c.strokeStyle = borderColor; c.lineWidth = 1.5; c.stroke();
-  c.font = "bold 14px 'JetBrains Mono', monospace";
+  c.font = "bold 13px 'JetBrains Mono', monospace";
   c.fillStyle = borderColor;
-  c.textAlign = "center";
-  c.textBaseline = "middle";
-  c.fillText((isBuy ? "▲ BOUGHT" : "▼ SOLD"), pillX + pillW / 2, pillY + pillH / 2);
+  c.textAlign = "center"; c.textBaseline = "middle";
+  c.fillText(isBuy ? "▲ BOUGHT" : "▼ SOLD", pillX + pillW / 2, pillY + pillH / 2);
   c.restore();
   c.textAlign = "left";
 
-  // Big USD amount
-  c.font = "bold 46px 'JetBrains Mono', monospace";
-  c.fillStyle = "#fff";
+  // ---- Big USD amount ----
+  // Auto-shrink font if amount is very long
+  const amtStr = fmtUsd(trade.usdAmount);
+  let fontSize = 52;
+  c.font = `bold ${fontSize}px 'JetBrains Mono', monospace`;
+  while (c.measureText(amtStr).width > W - 48 && fontSize > 28) {
+    fontSize -= 2;
+    c.font = `bold ${fontSize}px 'JetBrains Mono', monospace`;
+  }
+  c.fillStyle = "#ffffff";
   c.textBaseline = "alphabetic";
-  c.fillText(fmtUsd(trade.usdAmount), 24, 130);
+  c.fillText(amtStr, 28, 148);
 
-  // Price line
-  c.font = "14px 'Space Grotesk', sans-serif";
+  // ---- Price per coin ----
+  c.font = "13px 'Space Grotesk', sans-serif";
   c.fillStyle = "#8a9a8f";
-  c.fillText(`@ ${fmtPrice(price)} per $PLTY`, 26, 158);
+  c.textBaseline = "alphabetic";
+  c.fillText(`@ ${fmtPrice(price)} per $PLTY`, 30, 172);
 
-  // Divider
+  // ---- Divider ----
   c.strokeStyle = "rgba(255,255,255,0.07)";
   c.lineWidth = 1;
-  c.beginPath(); c.moveTo(24, 174); c.lineTo(W - 24, 174); c.stroke();
+  c.beginPath(); c.moveTo(28, 188); c.lineTo(W - 28, 188); c.stroke();
 
-  // Realized P&L
-  c.font = "12px 'Space Grotesk', sans-serif";
-  c.fillStyle = "#8a9a8f";
-  c.fillText("Realized P&L", 26, 198);
-  c.font = "bold 15px 'JetBrains Mono', monospace";
-  c.fillStyle = realizedPnl >= 0 ? "#7cff6b" : "#ff3d6e";
-  c.fillText(`${rSign}${fmtUsd(realizedPnl)}`, 26, 220);
-
-  // User profile (bottom right)
-  const avatarImg = getAvatarImg(avatarUrl);
-  const ax = W - 130, ay = 192;
-  c.save();
-  c.beginPath(); c.arc(ax + 16, ay + 16, 16, 0, Math.PI * 2);
-  c.fillStyle = "#1a1f1d"; c.fill();
-  c.strokeStyle = "#2a3a2d"; c.lineWidth = 1.5; c.stroke();
-  if (avatarImg.complete && avatarImg.naturalWidth) {
-    c.beginPath(); c.arc(ax + 16, ay + 16, 14, 0, Math.PI * 2); c.clip();
-    c.drawImage(avatarImg, ax + 2, ay + 2, 28, 28);
-  }
-  c.restore();
-  c.font = "bold 13px 'Space Grotesk', sans-serif";
-  c.fillStyle = "#fff";
-  c.textBaseline = "middle";
-  c.fillText(username, ax + 38, ay + 12);
+  // ---- Realized P&L (bottom left) ----
   c.font = "11px 'Space Grotesk', sans-serif";
   c.fillStyle = "#8a9a8f";
-  c.fillText("platypuscodes.github.io/memecoin", ax + 38, ay + 28);
+  c.textBaseline = "top";
+  c.fillText("Realized P&L", 30, 200);
+  c.font = "bold 16px 'JetBrains Mono', monospace";
+  c.fillStyle = realizedPnl >= 0 ? "#7cff6b" : "#ff3d6e";
+  c.fillText(`${rSign}${fmtUsd(realizedPnl)}`, 30, 218);
 
-  // Trigger download
+  // ---- User profile (bottom right) ----
+  const AR = 20; // avatar radius
+  const AX = W - 28 - AR * 2; // right-aligned
+  const AY = 196;
+
+  c.save();
+  c.beginPath(); c.arc(AX + AR, AY + AR, AR, 0, Math.PI * 2);
+  c.fillStyle = "#1a1f1d"; c.fill();
+  c.strokeStyle = borderColor; c.lineWidth = 1.5; c.stroke();
+  if (avatarImg) {
+    c.beginPath(); c.arc(AX + AR, AY + AR, AR - 1, 0, Math.PI * 2); c.clip();
+    c.drawImage(avatarImg, AX + 1, AY + 1, (AR - 1) * 2, (AR - 1) * 2);
+  }
+  c.restore();
+
+  // Username — right-aligned to avatar, clipped so it never overflows
+  const nameMaxW = AX - 36; // space between left edge and avatar
+  c.save();
+  c.font = "bold 14px 'Space Grotesk', sans-serif";
+  c.fillStyle = "#ffffff";
+  c.textBaseline = "top";
+  c.textAlign = "right";
+  // Clip username to available width
+  let displayName = username;
+  while (c.measureText(displayName).width > nameMaxW - 30 && displayName.length > 1) {
+    displayName = displayName.slice(0, -1);
+  }
+  if (displayName !== username) displayName += "…";
+  c.fillText(displayName, AX - 8, AY + 4);
+  c.font = "10px 'Space Grotesk', sans-serif";
+  c.fillStyle = "#8a9a8f";
+  c.fillText("platypuscodes.github.io/memecoin", AX - 8, AY + 22);
+  c.restore();
+
+  // ---- Download ----
   oc.toBlob((blob) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -3166,6 +3204,33 @@ function closeAdminPortal() {
 // ===========================================================
 // PWA INSTALL PROMPT
 // ===========================================================
+// ===========================================================
+// USER NOTIFICATION PREFERENCES
+// ===========================================================
+const _prefs = {
+  sharePrompt: localStorage.getItem("plty_pref_share") !== "0",
+  installBanner: localStorage.getItem("plty_pref_install") !== "0",
+};
+
+function setupNotifPrefs() {
+  const shareToggle = el("prefSharePrompt");
+  const installToggle = el("prefInstallBanner");
+  if (!shareToggle || !installToggle) return;
+
+  shareToggle.checked = _prefs.sharePrompt;
+  installToggle.checked = _prefs.installBanner;
+
+  shareToggle.addEventListener("change", () => {
+    _prefs.sharePrompt = shareToggle.checked;
+    localStorage.setItem("plty_pref_share", shareToggle.checked ? "1" : "0");
+  });
+  installToggle.addEventListener("change", () => {
+    _prefs.installBanner = installToggle.checked;
+    localStorage.setItem("plty_pref_install", installToggle.checked ? "1" : "0");
+    if (!installToggle.checked) hidePwaBanner();
+  });
+}
+
 let _pwaInstallEvent = null;
 let _pwaPromptDismissed = false;
 
@@ -3173,8 +3238,7 @@ window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault();
   _pwaInstallEvent = e;
   // Only show once per session, and not if already dismissed this session
-  if (!_pwaPromptDismissed && !localStorage.getItem("plty_pwa_installed")) {
-    // Wait until after boot so it doesn't clash with auth loading
+  if (!_pwaPromptDismissed && !localStorage.getItem("plty_pwa_installed") && _prefs.installBanner) {
     setTimeout(showPwaInstallBanner, 3000);
   }
 });
