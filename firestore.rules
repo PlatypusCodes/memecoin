@@ -9,9 +9,10 @@ service cloud.firestore {
 
     // ---------- users/{uid} ----------
     match /users/{userId} {
-      // Admin can read all users; others can only read their own.
-      allow read: if request.auth != null
-        && (request.auth.uid == userId || isAdmin());
+      // Leaderboard needs to read every user's balance/holdings, so any
+      // authenticated user can read the users collection. Writes are still
+      // locked down below.
+      allow read: if request.auth != null;
 
       allow create: if request.auth != null
         && request.auth.uid == userId
