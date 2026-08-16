@@ -115,6 +115,20 @@ let chartType = localStorage.getItem("plty_chart_type") || "candles";
 // Whether whale BUY tags render on the chart. Per-user preference, persisted locally.
 // Whale SELL tags are unaffected by this toggle.
 let showWhaleBuys = localStorage.getItem("plty_whale_buys") !== "0";
+
+// Line-chart appearance preferences (chartType === "line" only).
+// mode: "classic" (single color for the whole line, based on overall trend)
+//     | "segment" (color flips per up/down move along the line)
+//     | "rainbow" (animated neon rainbow gradient, ignores up/down colors)
+let lineStyleMode = localStorage.getItem("plty_line_style") || "classic";
+let lineUpColor   = localStorage.getItem("plty_line_up_color")   || "#7cff6b";
+let lineDownColor = localStorage.getItem("plty_line_down_color") || "#ff3d6e";
+
+function hexToRgbStr(hex) {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || "");
+  if (!m) return "124,255,107";
+  return `${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)}`;
+}
 let hoverPoint = null;
 let sheetMode = "buy";
 let sheetAmount = "";
@@ -501,6 +515,7 @@ function boot() {
   setupAlertUI();
   setupQuickTradeUI();
   setupMarkerOpacityUI();
+  setupLineStyleUI();
   setupNotifPrefs();
 }
 
@@ -1750,8 +1765,9 @@ function drawLineSeries(candles, xFor, yFor, padT, plotH) {
     return;
   }
   const up = candles[candles.length - 1].close >= candles[0].close;
-  const color = up ? (cssVar("--toxic") || "#7cff6b") : (cssVar("--venom") || "#ff3d6e");
-  const rgb   = up ? "124,255,107" : "255,61,110";
+  const upRgb = hexToRgbStr(lineUpColor), downRgb = hexToRgbStr(lineDownColor);
+  const color = up ? lineUpColor : lineDownColor;
+  const rgb   = up ? upRgb : downRgb;
 
   const pts = [];
   const xW = xFor(1) - xFor(0);
@@ -1786,10 +1802,10 @@ function drawLineSeries(candles, xFor, yFor, padT, plotH) {
   }
   pts.push({ x: xFor(candles.length - 1) + xW * 0.48, y: yFor(candles[candles.length - 1].close) });
 
-  function buildPath() {
+  function buildPath(from, to) {
     ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) {
+    ctx.moveTo(pts[from].x, pts[from].y);
+    for (let i = from + 1; i <= to; i++) {
       const prev = pts[i - 1], curr = pts[i];
       const cpx = prev.x + (curr.x - prev.x) * 0.22;
       const cpy = prev.y;
@@ -1801,32 +1817,87 @@ function drawLineSeries(candles, xFor, yFor, padT, plotH) {
   const firstPt  = pts[0];
   const lastPt   = pts[pts.length - 1];
 
-  buildPath();
+  // Rainbow gradient spans the full plotted width regardless of mode's use.
+  function rainbowGradient(alpha) {
+    const grad = ctx.createLinearGradient(firstPt.x, 0, lastPt.x, 0);
+    const hues = [0, 40, 80, 140, 190, 250, 300, 340];
+    hues.forEach((hue, i) => grad.addColorStop(i / (hues.length - 1), `hsla(${hue},100%,62%,${alpha})`));
+    return grad;
+  }
+
+  // ---- Area fill under the line (shared across modes) ----
+  buildPath(0, pts.length - 1);
   ctx.lineTo(lastPt.x, bottom);
   ctx.lineTo(firstPt.x, bottom);
   ctx.closePath();
-  const areaGrad = ctx.createLinearGradient(0, padT, 0, bottom);
-  areaGrad.addColorStop(0,   `rgba(${rgb},0.20)`);
-  areaGrad.addColorStop(0.5, `rgba(${rgb},0.06)`);
-  areaGrad.addColorStop(1,   `rgba(${rgb},0)`);
-  ctx.fillStyle = areaGrad;
+  if (lineStyleMode === "rainbow") {
+    ctx.fillStyle = rainbowGradient(0.12);
+  } else {
+    const areaGrad = ctx.createLinearGradient(0, padT, 0, bottom);
+    areaGrad.addColorStop(0,   `rgba(${rgb},0.20)`);
+    areaGrad.addColorStop(0.5, `rgba(${rgb},0.06)`);
+    areaGrad.addColorStop(1,   `rgba(${rgb},0)`);
+    ctx.fillStyle = areaGrad;
+  }
   ctx.fill();
 
-  ctx.save();
-  buildPath();
-  ctx.shadowColor = `rgba(${rgb},0.55)`;
-  ctx.shadowBlur  = 10;
-  ctx.strokeStyle = `rgba(${rgb},0.5)`;
-  ctx.lineWidth   = 3.5;
-  ctx.lineJoin = "round"; ctx.lineCap = "round";
-  ctx.stroke();
-  ctx.restore();
+  if (lineStyleMode === "segment") {
+    // Color each little run of points by its local direction (green on ups,
+    // red on down) instead of one color for the whole visible line.
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    for (let i = 1; i < pts.length; i++) {
+      const segUp = pts[i].y <= pts[i - 1].y; // smaller y = higher on screen = price up
+      const segRgb = segUp ? upRgb : downRgb;
+      const segColor = segUp ? lineUpColor : lineDownColor;
 
-  buildPath();
-  ctx.strokeStyle = color;
-  ctx.lineWidth   = 1.5;
-  ctx.lineJoin = "round"; ctx.lineCap = "round";
-  ctx.stroke();
+      ctx.save();
+      buildPath(i - 1, i);
+      ctx.shadowColor = `rgba(${segRgb},0.55)`;
+      ctx.shadowBlur  = 10;
+      ctx.strokeStyle = `rgba(${segRgb},0.5)`;
+      ctx.lineWidth   = 3.5;
+      ctx.stroke();
+      ctx.restore();
+
+      buildPath(i - 1, i);
+      ctx.strokeStyle = segColor;
+      ctx.lineWidth   = 1.5;
+      ctx.stroke();
+    }
+  } else if (lineStyleMode === "rainbow") {
+    ctx.save();
+    buildPath(0, pts.length - 1);
+    ctx.shadowColor = "rgba(255,255,255,0.35)";
+    ctx.shadowBlur  = 14;
+    ctx.strokeStyle = rainbowGradient(0.55);
+    ctx.lineWidth   = 3.5;
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.stroke();
+    ctx.restore();
+
+    buildPath(0, pts.length - 1);
+    ctx.strokeStyle = rainbowGradient(1);
+    ctx.lineWidth   = 1.8;
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.stroke();
+  } else {
+    // classic: one color for the whole line, based on overall trend
+    ctx.save();
+    buildPath(0, pts.length - 1);
+    ctx.shadowColor = `rgba(${rgb},0.55)`;
+    ctx.shadowBlur  = 10;
+    ctx.strokeStyle = `rgba(${rgb},0.5)`;
+    ctx.lineWidth   = 3.5;
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.stroke();
+    ctx.restore();
+
+    buildPath(0, pts.length - 1);
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 1.5;
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.stroke();
+  }
 
   drawPulseDot(lastPt.x, lastPt.y);
 }
@@ -2663,6 +2734,44 @@ function setupMarkerOpacityUI() {
     el("sellOpacityValue").textContent = `${sellSlider.value}%`;
     if (sheetMode === "sell") el("tradeSheet").style.opacity = sellMarkerOpacity;
     saveMarkerOpacity();
+  });
+}
+
+function syncLineStyleUI() {
+  document.querySelectorAll(".line-style-btn").forEach(b => {
+    b.classList.toggle("active", b.dataset.style === lineStyleMode);
+  });
+  const colorsWrap = el("lineStyleColors");
+  if (colorsWrap) colorsWrap.classList.toggle("hidden", lineStyleMode === "rainbow");
+  const upInput = el("lineUpColorInput"), downInput = el("lineDownColorInput");
+  if (upInput) upInput.value = lineUpColor;
+  if (downInput) downInput.value = lineDownColor;
+}
+
+function setupLineStyleUI() {
+  const modesWrap = el("lineStyleModes");
+  if (!modesWrap) return;
+  syncLineStyleUI();
+
+  modesWrap.querySelectorAll(".line-style-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      lineStyleMode = btn.dataset.style;
+      localStorage.setItem("plty_line_style", lineStyleMode);
+      syncLineStyleUI();
+      drawChart();
+    });
+  });
+
+  el("lineUpColorInput").addEventListener("input", (e) => {
+    lineUpColor = e.target.value;
+    localStorage.setItem("plty_line_up_color", lineUpColor);
+    drawChart();
+  });
+
+  el("lineDownColorInput").addEventListener("input", (e) => {
+    lineDownColor = e.target.value;
+    localStorage.setItem("plty_line_down_color", lineDownColor);
+    drawChart();
   });
 }
 

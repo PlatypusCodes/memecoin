@@ -287,6 +287,29 @@
           </div>
         </div>
 
+        <!-- Line chart style -->
+        <div class="triggers-section" id="lineStyleSection">
+          <div class="triggers-title-row">
+            <span class="triggers-title">Line chart style</span>
+          </div>
+          <div class="line-style-modes" id="lineStyleModes">
+            <button class="line-style-btn" data-style="classic">Classic</button>
+            <button class="line-style-btn" data-style="segment">Green ups / Red downs</button>
+            <button class="line-style-btn" data-style="rainbow">Rainbow neon</button>
+          </div>
+          <div class="line-style-colors" id="lineStyleColors">
+            <label class="line-color-row">
+              <span class="opacity-label buy">Up color</span>
+              <input type="color" id="lineUpColorInput" value="#7cff6b" />
+            </label>
+            <label class="line-color-row">
+              <span class="opacity-label sell">Down color</span>
+              <input type="color" id="lineDownColorInput" value="#ff3d6e" />
+            </label>
+          </div>
+          <p class="admin-hint">Only applies when the chart is set to Line view.</p>
+        </div>
+
         <!-- Stop-loss / take-profit -->
         <div class="triggers-section">
           <div class="triggers-title">Auto triggers</div>
