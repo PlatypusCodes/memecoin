@@ -1377,11 +1377,10 @@ async function openTraderProfile(uid) {
   if (rec.buys >= rec.sells * 3 && totalTrades >= 5) badges.push({ icon: "💎", label: "Diamond Hands" });
   if (rec.sells >= rec.buys * 3 && totalTrades >= 5) badges.push({ icon: "📄", label: "Paper Hands" });
   if (rec.buys >= 1 && rec.sells === 0) badges.push({ icon: "🏔️", label: "Never Sold" });
-  // Realized P&L badges (stored on traderMap entry, populated from user doc)
-  const realizedPnl = rec.realizedPnl || 0;
-  if (realizedPnl >= 1000)   badges.push({ icon: "💰", label: "In The Green" });
-  if (realizedPnl >= 10000)  badges.push({ icon: "🤑", label: "Profit Machine" });
-  if (realizedPnl < -5000)   badges.push({ icon: "🩸", label: "Rekt" });
+  // Realized P&L badges (rec.realizedPnl was set above via fetchTraderRealizedPnl)
+  if ((rec.realizedPnl || 0) >= 1000)   badges.push({ icon: "💰", label: "In The Green" });
+  if ((rec.realizedPnl || 0) >= 10000)  badges.push({ icon: "🤑", label: "Profit Machine" });
+  if ((rec.realizedPnl || 0) < -5000)   badges.push({ icon: "🩸", label: "Rekt" });
   if (rec.buys === 1 && totalTrades === 1) badges.push({ icon: "🐢", label: "Lurker" });
   el("modalBadges").innerHTML = badges.map(b =>
     `<span class="badge"><span class="badge-icon">${b.icon}</span>${b.label}</span>`
