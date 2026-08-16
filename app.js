@@ -502,24 +502,6 @@ function boot() {
   setupQuickTradeUI();
   setupMarkerOpacityUI();
   setupNotifPrefs();
-  updateLeaderboardTabVisibility();
-}
-
-// Leaderboard is admin-only for now. Non-admins never see the tab, and if it
-// were somehow left active (e.g. an admin logs out mid-session) we bounce
-// back to the Feed panel.
-function updateLeaderboardTabVisibility() {
-  const tabBtn = el("leaderboardTabBtn");
-  if (!tabBtn) return;
-  const allowed = isAdminUser();
-  tabBtn.classList.toggle("hidden", !allowed);
-  if (!allowed && tabBtn.classList.contains("active")) {
-    tabBtn.classList.remove("active");
-    document.querySelector('.panel-tab[data-panel="feed"]').classList.add("active");
-    PANELS.forEach(p => {
-      el("panel" + p[0].toUpperCase() + p.slice(1)).classList.toggle("hidden", p !== "feed");
-    });
-  }
 }
 
 // ===========================================================
@@ -1432,7 +1414,6 @@ function escapeHtml(s) {
 const PANELS = ["feed", "leaderboard", "wallet"];
 document.querySelectorAll(".panel-tab").forEach(btn => {
   btn.addEventListener("click", () => {
-    if (btn.dataset.panel === "leaderboard" && !isAdminUser()) return;
     document.querySelectorAll(".panel-tab").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     const target = btn.dataset.panel;
