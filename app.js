@@ -1835,20 +1835,18 @@ function drawLineSeries(candles, xFor, yFor, padT, plotH) {
     return grad;
   }
 
-  // ---- Area fill under the line (shared across modes) ----
+  // ---- Area fill under the line ----
+  // The rainbow effect is line-only; the fill underneath always uses the
+  // plain up/down trend color so the neon look doesn't bleed into the area.
   buildPath(0, pts.length - 1);
   ctx.lineTo(lastPt.x, bottom);
   ctx.lineTo(firstPt.x, bottom);
   ctx.closePath();
-  if (lineStyleMode === "rainbow") {
-    ctx.fillStyle = rainbowGradient(0.12);
-  } else {
-    const areaGrad = ctx.createLinearGradient(0, padT, 0, bottom);
-    areaGrad.addColorStop(0,   `rgba(${rgb},0.20)`);
-    areaGrad.addColorStop(0.5, `rgba(${rgb},0.06)`);
-    areaGrad.addColorStop(1,   `rgba(${rgb},0)`);
-    ctx.fillStyle = areaGrad;
-  }
+  const areaGrad = ctx.createLinearGradient(0, padT, 0, bottom);
+  areaGrad.addColorStop(0,   `rgba(${rgb},0.20)`);
+  areaGrad.addColorStop(0.5, `rgba(${rgb},0.06)`);
+  areaGrad.addColorStop(1,   `rgba(${rgb},0)`);
+  ctx.fillStyle = areaGrad;
   ctx.fill();
 
   if (lineStyleMode === "segment") {
