@@ -340,7 +340,8 @@ el("onboardForm").addEventListener("submit", async (e) => {
       holdings: 0,
       createdAt: Date.now(),
       referredBy: referredBy || null,
-      costBasis: 0  // average cost basis for P&L
+      costBasis: 0,     // average cost basis for unrealised P&L
+      realizedPnl: 0    // cumulative realized P&L from completed sells
     };
     await setDoc(uref, data);
     currentUser = { uid, ...data };
@@ -993,7 +994,7 @@ function buildTraderMap() {
     if (!traderMap.has(t.uid)) {
       traderMap.set(t.uid, {
         username: t.username, avatarUrl: t.avatarUrl,
-        buys: 0, sells: 0, volume: 0, lastTs: t.ts
+        buys: 0, sells: 0, volume: 0, lastTs: t.ts, realizedPnl: 0
       });
     }
     const rec = traderMap.get(t.uid);
@@ -1001,6 +1002,19 @@ function buildTraderMap() {
     rec.volume += t.usdAmount || 0;
     if (t.ts > rec.lastTs) rec.lastTs = t.ts;
   }
+  // Merge realizedPnl from currentUser into their own traderMap entry
+  if (currentUser && traderMap.has(currentUser.uid)) {
+    traderMap.get(currentUser.uid).realizedPnl = currentUser.realizedPnl || 0;
+  }
+}
+
+// Fetch realizedPnl for a specific uid when opening their profile
+async function fetchTraderRealizedPnl(uid) {
+  if (uid === currentUser?.uid) return currentUser.realizedPnl || 0;
+  try {
+    const snap = await getDoc(doc(usersCol, uid));
+    return snap.exists() ? (snap.data().realizedPnl || 0) : 0;
+  } catch (_) { return 0; }
 }
 
 // ===========================================================
@@ -1109,6 +1123,15 @@ function renderWallet() {
   } else {
     el("walletUnrealised").textContent = "—";
     el("walletUnrealised").className = "";
+  }
+
+  // Realized P&L — what's been banked from completed sells
+  const realizedPnl = currentUser.realizedPnl || 0;
+  const rSign = realizedPnl >= 0 ? "+" : "";
+  const rEl = el("walletRealized");
+  if (rEl) {
+    rEl.textContent = `${rSign}${fmtUsd(realizedPnl)}`;
+    rEl.className = realizedPnl >= 0 ? "up" : "down";
   }
 
   // Track portfolio history for sparkline
@@ -1317,7 +1340,7 @@ el("profileModal").addEventListener("click", (e) => {
   if (e.target === el("profileModal")) el("profileModal").classList.add("hidden");
 });
 
-function openTraderProfile(uid) {
+async function openTraderProfile(uid) {
   const rec = traderMap.get(uid);
   if (!rec) return;
 
@@ -1325,6 +1348,16 @@ function openTraderProfile(uid) {
   el("modalAvatar").onerror = () => { el("modalAvatar").src = DEFAULT_AVATAR; };
   el("modalUsername").textContent = rec.username;
   el("modalSince").textContent = `Last trade ${timeAgo(rec.lastTs)}`;
+
+  // Show realized P&L on profile
+  const realizedPnl = await fetchTraderRealizedPnl(uid);
+  rec.realizedPnl = realizedPnl;
+  const rSign = realizedPnl >= 0 ? "+" : "";
+  const rEl = el("modalRealizedPnl");
+  if (rEl) {
+    rEl.textContent = `${rSign}${fmtUsd(realizedPnl)}`;
+    rEl.className = "modal-stat-val " + (realizedPnl >= 0 ? "up" : "down");
+  }
   el("modalVolume").textContent = fmtCompact(rec.volume);
   el("modalTrades").textContent = rec.buys + rec.sells;
   el("modalBuys").textContent = rec.buys;
@@ -1332,12 +1365,24 @@ function openTraderProfile(uid) {
 
   // Badges
   const badges = [];
-  if (rec.buys + rec.sells >= 1) badges.push({ icon: "🐣", label: "First Trade" });
-  if (rec.buys + rec.sells >= 10) badges.push({ icon: "🦆", label: "Active Trader" });
-  if (rec.buys + rec.sells >= 50) badges.push({ icon: "🦈", label: "Shark" });
-  if (rec.volume >= 10000) badges.push({ icon: "🐋", label: "Whale" });
-  if (rec.buys >= rec.sells * 3) badges.push({ icon: "💎", label: "Diamond Hands" });
-  if (rec.sells >= rec.buys * 3) badges.push({ icon: "📄", label: "Paper Hands" });
+  const totalTrades = rec.buys + rec.sells;
+  if (totalTrades >= 1)  badges.push({ icon: "🐣", label: "First Trade" });
+  if (totalTrades >= 10) badges.push({ icon: "🦆", label: "Active Trader" });
+  if (totalTrades >= 50) badges.push({ icon: "🦈", label: "Shark" });
+  if (totalTrades >= 100) badges.push({ icon: "⚡", label: "Degenerate" });
+  if (totalTrades >= 250) badges.push({ icon: "🌀", label: "Compulsive" });
+  if (rec.volume >= 10000)  badges.push({ icon: "🐋", label: "Whale" });
+  if (rec.volume >= 50000)  badges.push({ icon: "🌊", label: "Mega Whale" });
+  if (rec.volume >= 250000) badges.push({ icon: "🔱", label: "Market Mover" });
+  if (rec.buys >= rec.sells * 3 && totalTrades >= 5) badges.push({ icon: "💎", label: "Diamond Hands" });
+  if (rec.sells >= rec.buys * 3 && totalTrades >= 5) badges.push({ icon: "📄", label: "Paper Hands" });
+  if (rec.buys >= 1 && rec.sells === 0) badges.push({ icon: "🏔️", label: "Never Sold" });
+  // Realized P&L badges (stored on traderMap entry, populated from user doc)
+  const realizedPnl = rec.realizedPnl || 0;
+  if (realizedPnl >= 1000)   badges.push({ icon: "💰", label: "In The Green" });
+  if (realizedPnl >= 10000)  badges.push({ icon: "🤑", label: "Profit Machine" });
+  if (realizedPnl < -5000)   badges.push({ icon: "🩸", label: "Rekt" });
+  if (rec.buys === 1 && totalTrades === 1) badges.push({ icon: "🐢", label: "Lurker" });
   el("modalBadges").innerHTML = badges.map(b =>
     `<span class="badge"><span class="badge-icon">${b.icon}</span>${b.label}</span>`
   ).join("") || `<span style="color:var(--text-faint);font-size:11px">No badges yet</span>`;
@@ -1907,7 +1952,76 @@ function drawTradeMarkers() {
   }
   chartLayout.visibleTrades = markerData;
 
+  drawWhaleAnnotations(candles, xFor, yFor, bucketMs, firstTs, lastTs);
   drawTriggerLines();
+}
+
+const WHALE_THRESHOLD = 1000; // USD — trades above this get a label
+
+function drawWhaleAnnotations(candles, xFor, yFor, bucketMs, firstTs, lastTs) {
+  if (!ctx || !candles.length) return;
+  const whaleTrades = trades.filter(t =>
+    t.ts >= firstTs && t.ts < lastTs && (t.usdAmount || 0) >= WHALE_THRESHOLD
+  );
+  if (!whaleTrades.length) return;
+
+  const bucketToIdx = new Map();
+  candles.forEach((c, i) => bucketToIdx.set(c.ts, i));
+  const { padT, h, padB } = chartLayout;
+
+  // De-duplicate by candle so we only show one label per candle (the biggest trade)
+  const byCandle = new Map();
+  for (const t of whaleTrades) {
+    const bucket = Math.floor(t.ts / bucketMs) * bucketMs;
+    const idx = bucketToIdx.has(bucket)
+      ? bucketToIdx.get(bucket)
+      : Math.min(candles.length - 1, Math.max(0, Math.floor((t.ts - firstTs) / bucketMs)));
+    const existing = byCandle.get(idx);
+    if (!existing || t.usdAmount > existing.usdAmount) byCandle.set(idx, { ...t, _idx: idx });
+  }
+
+  ctx.save();
+  ctx.font = "bold 10px Space Grotesk, sans-serif";
+
+  for (const [idx, t] of byCandle) {
+    const x = xFor(idx);
+    const candle = candles[idx];
+    const isBuy = t.type === "buy";
+    const color = isBuy ? (cssVar("--toxic") || "#7cff6b") : (cssVar("--venom") || "#ff3d6e");
+    const emoji = t.usdAmount >= 5000 ? "🐋" : "🐬";
+    const label = `${emoji} ${isBuy ? "bought" : "sold"} ${fmtCompact(t.usdAmount)}`;
+    const tw = ctx.measureText(label).width;
+    const pw = tw + 10, ph = 16;
+
+    // Position: above high for buys, below low for sells
+    let py;
+    if (isBuy) {
+      py = yFor(candle.high) - 28;
+      py = Math.max(padT + 2, py);
+    } else {
+      py = yFor(candle.low) + 12;
+      py = Math.min(h - padB - ph - 2, py);
+    }
+    const px = Math.min(Math.max(x - pw / 2, 4), chartLayout.w - pw - 4);
+
+    // Pill background
+    ctx.save();
+    roundRectPath(ctx, px, py, pw, ph, 4);
+    ctx.fillStyle = `rgba(${isBuy ? "124,255,107" : "255,61,110"},0.12)`;
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
+
+    // Label text
+    ctx.fillStyle = color;
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    ctx.fillText(label, px + 5, py + ph / 2);
+  }
+
+  ctx.restore();
 }
 
 function drawTriggerLines() {
@@ -2203,6 +2317,11 @@ async function confirmTrade(isQuick = false) {
     if (!_lastTradeWasLocal) {
       const verb = sheetMode === "buy" ? "Bought" : "Sold";
       toast(isQuick ? `⚡ Instantly ${verb.toLowerCase()} ${fmtUsd(amt)} of $PLTY` : `${verb} ${fmtUsd(amt)} of $PLTY`, false);
+      // Offer shareable trade card after a meaningful trade
+      if (amt >= 10) {
+        const tradeSnap = { type: sheetMode, usdAmount: amt, price: marketState.price || STARTING_PRICE };
+        setTimeout(() => showShareTradePrompt(tradeSnap), 600);
+      }
     }
     sheetLastMax[sheetMode] = false; // reset so next open doesn't auto-fill stale max
     setTimeout(closeSheet, 450);
@@ -2273,11 +2392,15 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
         balance += usdReceived;
         // Reduce costBasis proportionally using live server value
         const sellRatio = liveHoldings > 0 ? coinAmount / liveHoldings : 0;
+        const soldCostBasis = costBasis * sellRatio;
         costBasis = costBasis * (1 - sellRatio);
         holdings = liveHoldings - coinAmount;
         if (holdings < 1e-9) { holdings = 0; costBasis = 0; }
+        // Realized P&L = what we received minus what we paid for those coins
+        const tradeRealizedPnl = usdReceived - soldCostBasis;
+        const newRealizedPnl = (u.realizedPnl || 0) + tradeRealizedPnl;
         tx.update(marketRef, { price, marketCap: price * TOTAL_SUPPLY, lastTickIndex: _lastKnownTickIdx });
-        tx.update(uref, { balance, holdings, costBasis });
+        tx.update(uref, { balance, holdings, costBasis, realizedPnl: newRealizedPnl });
         const tradeDoc = doc(tradesCol);
         tx.set(tradeDoc, {
           uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
@@ -2742,6 +2865,171 @@ function setupReferral() {
 }
 
 // ===========================================================
+// SHAREABLE TRADE CARD
+// ===========================================================
+function showShareTradePrompt(trade) {
+  // Remove any existing prompt
+  const existing = document.getElementById("shareTradePrompt");
+  if (existing) existing.remove();
+
+  const wrap = document.createElement("div");
+  wrap.id = "shareTradePrompt";
+  wrap.className = "share-prompt";
+  const isBuy = trade.type === "buy";
+  const verb = isBuy ? "Bought" : "Sold";
+  const color = isBuy ? "#7cff6b" : "#ff3d6e";
+  wrap.innerHTML = `
+    <div class="share-prompt-inner">
+      <span style="font-size:18px">${isBuy ? "📈" : "📉"}</span>
+      <span class="share-prompt-text">${verb} ${fmtUsd(trade.usdAmount)} of $PLTY — share your trade?</span>
+      <button class="share-prompt-btn" id="shareTradeBtn" style="--share-color:${color}">Share 🎴</button>
+      <button class="share-prompt-dismiss" id="shareTradeClose">✕</button>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  // Animate in
+  requestAnimationFrame(() => wrap.classList.add("visible"));
+
+  el("shareTradeBtn").addEventListener("click", () => {
+    wrap.remove();
+    generateTradeCard(trade);
+  });
+  el("shareTradeClose").addEventListener("click", () => wrap.remove());
+  // Auto-dismiss after 7s
+  setTimeout(() => { if (wrap.parentNode) wrap.remove(); }, 7000);
+}
+
+function generateTradeCard(trade) {
+  const isBuy = trade.type === "buy";
+  const price = trade.price || STARTING_PRICE;
+  const username = currentUser?.username || "anon";
+  const avatarUrl = currentUser?.avatarUrl || DEFAULT_AVATAR;
+  const realizedPnl = currentUser?.realizedPnl || 0;
+  const rSign = realizedPnl >= 0 ? "+" : "";
+
+  // Draw onto an offscreen canvas
+  const W = 520, H = 280;
+  const oc = document.createElement("canvas");
+  oc.width = W * 2; oc.height = H * 2; // retina
+  const c = oc.getContext("2d");
+  c.scale(2, 2);
+
+  // Background
+  const grad = c.createLinearGradient(0, 0, W, H);
+  grad.addColorStop(0, "#0b0e0c");
+  grad.addColorStop(1, "#111714");
+  c.fillStyle = grad;
+  c.beginPath(); roundRectPath(c, 0, 0, W, H, 16); c.fill();
+
+  // Accent border
+  const borderColor = isBuy ? "#7cff6b" : "#ff3d6e";
+  c.strokeStyle = borderColor;
+  c.lineWidth = 2;
+  c.beginPath(); roundRectPath(c, 1, 1, W - 2, H - 2, 15); c.stroke();
+
+  // Glow
+  c.save();
+  c.shadowColor = borderColor;
+  c.shadowBlur = 32;
+  c.strokeStyle = borderColor;
+  c.lineWidth = 1;
+  c.beginPath(); roundRectPath(c, 2, 2, W - 4, H - 4, 14); c.stroke();
+  c.restore();
+
+  // Coin logo circle
+  const logoImg = getAvatarImg(DEFAULT_AVATAR);
+  c.save();
+  c.beginPath(); c.arc(44, 44, 22, 0, Math.PI * 2); c.fillStyle = "#1a1f1d"; c.fill();
+  c.strokeStyle = borderColor; c.lineWidth = 2; c.stroke();
+  if (logoImg.complete && logoImg.naturalWidth) {
+    c.beginPath(); c.arc(44, 44, 20, 0, Math.PI * 2); c.clip();
+    c.drawImage(logoImg, 24, 24, 40, 40);
+  }
+  c.restore();
+
+  // $PLTY label
+  c.font = "bold 13px 'Space Grotesk', sans-serif";
+  c.fillStyle = "#fff";
+  c.textBaseline = "middle";
+  c.fillText("$PLTY · Platypus", 76, 37);
+  c.font = "11px 'Space Grotesk', sans-serif";
+  c.fillStyle = "#8a9a8f";
+  c.fillText("platypuscodes.github.io/memecoin", 76, 53);
+
+  // Action pill
+  const pillW = 130, pillH = 30;
+  const pillX = W - pillW - 24, pillY = 24;
+  c.save();
+  roundRectPath(c, pillX, pillY, pillW, pillH, 8);
+  c.fillStyle = isBuy ? "rgba(124,255,107,0.15)" : "rgba(255,61,110,0.15)";
+  c.fill();
+  c.strokeStyle = borderColor; c.lineWidth = 1.5; c.stroke();
+  c.font = "bold 14px 'JetBrains Mono', monospace";
+  c.fillStyle = borderColor;
+  c.textAlign = "center";
+  c.textBaseline = "middle";
+  c.fillText((isBuy ? "▲ BOUGHT" : "▼ SOLD"), pillX + pillW / 2, pillY + pillH / 2);
+  c.restore();
+  c.textAlign = "left";
+
+  // Big USD amount
+  c.font = "bold 46px 'JetBrains Mono', monospace";
+  c.fillStyle = "#fff";
+  c.textBaseline = "alphabetic";
+  c.fillText(fmtUsd(trade.usdAmount), 24, 130);
+
+  // Price line
+  c.font = "14px 'Space Grotesk', sans-serif";
+  c.fillStyle = "#8a9a8f";
+  c.fillText(`@ ${fmtPrice(price)} per $PLTY`, 26, 158);
+
+  // Divider
+  c.strokeStyle = "rgba(255,255,255,0.07)";
+  c.lineWidth = 1;
+  c.beginPath(); c.moveTo(24, 174); c.lineTo(W - 24, 174); c.stroke();
+
+  // Realized P&L
+  c.font = "12px 'Space Grotesk', sans-serif";
+  c.fillStyle = "#8a9a8f";
+  c.fillText("Realized P&L", 26, 198);
+  c.font = "bold 15px 'JetBrains Mono', monospace";
+  c.fillStyle = realizedPnl >= 0 ? "#7cff6b" : "#ff3d6e";
+  c.fillText(`${rSign}${fmtUsd(realizedPnl)}`, 26, 220);
+
+  // User profile (bottom right)
+  const avatarImg = getAvatarImg(avatarUrl);
+  const ax = W - 130, ay = 192;
+  c.save();
+  c.beginPath(); c.arc(ax + 16, ay + 16, 16, 0, Math.PI * 2);
+  c.fillStyle = "#1a1f1d"; c.fill();
+  c.strokeStyle = "#2a3a2d"; c.lineWidth = 1.5; c.stroke();
+  if (avatarImg.complete && avatarImg.naturalWidth) {
+    c.beginPath(); c.arc(ax + 16, ay + 16, 14, 0, Math.PI * 2); c.clip();
+    c.drawImage(avatarImg, ax + 2, ay + 2, 28, 28);
+  }
+  c.restore();
+  c.font = "bold 13px 'Space Grotesk', sans-serif";
+  c.fillStyle = "#fff";
+  c.textBaseline = "middle";
+  c.fillText(username, ax + 38, ay + 12);
+  c.font = "11px 'Space Grotesk', sans-serif";
+  c.fillStyle = "#8a9a8f";
+  c.fillText("platypuscodes.github.io/memecoin", ax + 38, ay + 28);
+
+  // Trigger download
+  oc.toBlob((blob) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `plty-trade-${Date.now()}.png`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }, "image/png");
+
+  toast("🎴 Trade card downloaded!", false);
+}
+
+// ===========================================================
 // TOASTS
 // ===========================================================
 function toast(msg, isError) {
@@ -2874,6 +3162,71 @@ async function openAdminPortal() {
 function closeAdminPortal() {
   _adminPortalOpen = false;
   el("adminPortal").classList.add("hidden");
+}
+
+// ===========================================================
+// PWA INSTALL PROMPT
+// ===========================================================
+let _pwaInstallEvent = null;
+let _pwaPromptDismissed = false;
+
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  _pwaInstallEvent = e;
+  // Only show once per session, and not if already dismissed this session
+  if (!_pwaPromptDismissed && !localStorage.getItem("plty_pwa_installed")) {
+    // Wait until after boot so it doesn't clash with auth loading
+    setTimeout(showPwaInstallBanner, 3000);
+  }
+});
+
+window.addEventListener("appinstalled", () => {
+  localStorage.setItem("plty_pwa_installed", "1");
+  hidePwaBanner();
+});
+
+function showPwaInstallBanner() {
+  if (document.getElementById("pwaBanner")) return;
+  const banner = document.createElement("div");
+  banner.id = "pwaBanner";
+  banner.className = "pwa-banner";
+  banner.innerHTML = `
+    <div class="pwa-banner-inner">
+      <img src="${DEFAULT_AVATAR}" class="pwa-banner-logo" alt="" />
+      <div class="pwa-banner-text">
+        <strong>Add $PLTY to Home Screen</strong>
+        <span>Trade faster, even offline</span>
+      </div>
+      <button class="pwa-banner-install" id="pwaInstallBtn">Install</button>
+      <button class="pwa-banner-close" id="pwaDismissBtn">✕</button>
+    </div>
+  `;
+  document.body.appendChild(banner);
+  requestAnimationFrame(() => banner.classList.add("visible"));
+
+  el("pwaInstallBtn").addEventListener("click", async () => {
+    if (!_pwaInstallEvent) return;
+    _pwaInstallEvent.prompt();
+    const { outcome } = await _pwaInstallEvent.userChoice;
+    _pwaInstallEvent = null;
+    if (outcome === "accepted") {
+      localStorage.setItem("plty_pwa_installed", "1");
+      toast("🐾 $PLTY installed! Check your home screen.", false);
+    }
+    hidePwaBanner();
+  });
+
+  el("pwaDismissBtn").addEventListener("click", () => {
+    _pwaPromptDismissed = true;
+    hidePwaBanner();
+  });
+}
+
+function hidePwaBanner() {
+  const banner = document.getElementById("pwaBanner");
+  if (!banner) return;
+  banner.classList.remove("visible");
+  setTimeout(() => banner.remove(), 350);
 }
 
 // Right-Alt key toggle
