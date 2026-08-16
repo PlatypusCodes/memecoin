@@ -123,6 +123,15 @@ let showWhaleBuys = localStorage.getItem("plty_whale_buys") !== "0";
 let lineStyleMode = localStorage.getItem("plty_line_style") || "classic";
 let lineUpColor   = localStorage.getItem("plty_line_up_color")   || "#7cff6b";
 let lineDownColor = localStorage.getItem("plty_line_down_color") || "#ff3d6e";
+// Which hue palette the "rainbow" line style sweeps through.
+let rainbowPreset = localStorage.getItem("plty_rainbow_preset") || "classic";
+const RAINBOW_PRESETS = {
+  classic: [0, 40, 80, 140, 190, 250, 300, 340],
+  neon:    [330, 300, 270, 240, 200, 240, 270, 300],
+  sunset:  [30, 10, 350, 325, 300, 325, 350, 10]
+};
+// Color of the pulsing "latest price" dot on both candle and line charts.
+let liveDotColor = localStorage.getItem("plty_dot_color") || "#ffc94d";
 
 function hexToRgbStr(hex) {
   const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || "");
@@ -516,6 +525,7 @@ function boot() {
   setupQuickTradeUI();
   setupMarkerOpacityUI();
   setupLineStyleUI();
+  setupDotColorUI();
   setupNotifPrefs();
 }
 
@@ -1820,7 +1830,7 @@ function drawLineSeries(candles, xFor, yFor, padT, plotH) {
   // Rainbow gradient spans the full plotted width regardless of mode's use.
   function rainbowGradient(alpha) {
     const grad = ctx.createLinearGradient(firstPt.x, 0, lastPt.x, 0);
-    const hues = [0, 40, 80, 140, 190, 250, 300, 340];
+    const hues = RAINBOW_PRESETS[rainbowPreset] || RAINBOW_PRESETS.classic;
     hues.forEach((hue, i) => grad.addColorStop(i / (hues.length - 1), `hsla(${hue},100%,62%,${alpha})`));
     return grad;
   }
@@ -1906,12 +1916,13 @@ function drawLineSeries(candles, xFor, yFor, padT, plotH) {
 // Simple filled circle with a subtle halo at the latest candle close.
 // No rAF loop — the dot is repainted by the normal drawChart() cadence.
 function drawPulseDot(x, y) {
-  const bill = cssVar("--bill") || "#ffc94d";
+  const dot = liveDotColor;
+  const dotRgb = hexToRgbStr(dot);
   ctx.save();
   ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(255,201,77,0.18)"; ctx.fill();
+  ctx.fillStyle = `rgba(${dotRgb},0.18)`; ctx.fill();
   ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2);
-  ctx.fillStyle = bill; ctx.shadowColor = bill; ctx.shadowBlur = 8; ctx.fill();
+  ctx.fillStyle = dot; ctx.shadowColor = dot; ctx.shadowBlur = 8; ctx.fill();
   ctx.restore();
 }
 
@@ -2738,11 +2749,16 @@ function setupMarkerOpacityUI() {
 }
 
 function syncLineStyleUI() {
-  document.querySelectorAll(".line-style-btn").forEach(b => {
+  document.querySelectorAll(".line-style-btn[data-style]").forEach(b => {
     b.classList.toggle("active", b.dataset.style === lineStyleMode);
   });
   const colorsWrap = el("lineStyleColors");
   if (colorsWrap) colorsWrap.classList.toggle("hidden", lineStyleMode === "rainbow");
+  const presetsWrap = el("rainbowPresets");
+  if (presetsWrap) presetsWrap.classList.toggle("hidden", lineStyleMode !== "rainbow");
+  document.querySelectorAll(".line-style-btn[data-preset]").forEach(b => {
+    b.classList.toggle("active", b.dataset.preset === rainbowPreset);
+  });
   const upInput = el("lineUpColorInput"), downInput = el("lineDownColorInput");
   if (upInput) upInput.value = lineUpColor;
   if (downInput) downInput.value = lineDownColor;
@@ -2762,6 +2778,18 @@ function setupLineStyleUI() {
     });
   });
 
+  const presetsWrap = el("rainbowPresets");
+  if (presetsWrap) {
+    presetsWrap.querySelectorAll(".line-style-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        rainbowPreset = btn.dataset.preset;
+        localStorage.setItem("plty_rainbow_preset", rainbowPreset);
+        syncLineStyleUI();
+        drawChart();
+      });
+    });
+  }
+
   el("lineUpColorInput").addEventListener("input", (e) => {
     lineUpColor = e.target.value;
     localStorage.setItem("plty_line_up_color", lineUpColor);
@@ -2771,6 +2799,17 @@ function setupLineStyleUI() {
   el("lineDownColorInput").addEventListener("input", (e) => {
     lineDownColor = e.target.value;
     localStorage.setItem("plty_line_down_color", lineDownColor);
+    drawChart();
+  });
+}
+
+function setupDotColorUI() {
+  const dotInput = el("dotColorInput");
+  if (!dotInput) return;
+  dotInput.value = liveDotColor;
+  dotInput.addEventListener("input", (e) => {
+    liveDotColor = e.target.value;
+    localStorage.setItem("plty_dot_color", liveDotColor);
     drawChart();
   });
 }

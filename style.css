@@ -282,6 +282,8 @@ a{ color:inherit; }
   background:none; cursor:pointer;
 }
 .line-style-colors.hidden{ display:none; }
+.line-style-presets{ display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+.line-style-presets.hidden{ display:none; }
 
 .chart-wrap{
   position:relative; flex:1; min-height:320px;

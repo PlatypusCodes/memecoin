@@ -307,7 +307,26 @@
               <input type="color" id="lineDownColorInput" value="#ff3d6e" />
             </label>
           </div>
+          <div class="line-style-presets hidden" id="rainbowPresets">
+            <button class="line-style-btn" data-preset="classic">Classic Rainbow</button>
+            <button class="line-style-btn" data-preset="neon">Neon Pink/Blue</button>
+            <button class="line-style-btn" data-preset="sunset">Sunset</button>
+          </div>
           <p class="admin-hint">Only applies when the chart is set to Line view.</p>
+        </div>
+
+        <!-- Live price dot -->
+        <div class="triggers-section" id="dotColorSection">
+          <div class="triggers-title-row">
+            <span class="triggers-title">Live price dot color</span>
+          </div>
+          <div class="line-style-colors">
+            <label class="line-color-row">
+              <span class="opacity-label">Dot</span>
+              <input type="color" id="dotColorInput" value="#ffc94d" />
+            </label>
+          </div>
+          <p class="admin-hint">The pulsing dot marking the latest price, on both chart types.</p>
         </div>
 
         <!-- Stop-loss / take-profit -->
