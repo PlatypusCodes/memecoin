@@ -112,6 +112,9 @@ let trades = [];
 let traderMap = new Map();
 let activeTF = "live";
 let chartType = localStorage.getItem("plty_chart_type") || "candles";
+// Whether whale BUY tags render on the chart. Per-user preference, persisted locally.
+// Whale SELL tags are unaffected by this toggle.
+let showWhaleBuys = localStorage.getItem("plty_whale_buys") !== "0";
 let hoverPoint = null;
 let sheetMode = "buy";
 let sheetAmount = "";
@@ -499,6 +502,24 @@ function boot() {
   setupQuickTradeUI();
   setupMarkerOpacityUI();
   setupNotifPrefs();
+  updateLeaderboardTabVisibility();
+}
+
+// Leaderboard is admin-only for now. Non-admins never see the tab, and if it
+// were somehow left active (e.g. an admin logs out mid-session) we bounce
+// back to the Feed panel.
+function updateLeaderboardTabVisibility() {
+  const tabBtn = el("leaderboardTabBtn");
+  if (!tabBtn) return;
+  const allowed = isAdminUser();
+  tabBtn.classList.toggle("hidden", !allowed);
+  if (!allowed && tabBtn.classList.contains("active")) {
+    tabBtn.classList.remove("active");
+    document.querySelector('.panel-tab[data-panel="feed"]').classList.add("active");
+    PANELS.forEach(p => {
+      el("panel" + p[0].toUpperCase() + p.slice(1)).classList.toggle("hidden", p !== "feed");
+    });
+  }
 }
 
 // ===========================================================
@@ -1411,6 +1432,7 @@ function escapeHtml(s) {
 const PANELS = ["feed", "leaderboard", "wallet"];
 document.querySelectorAll(".panel-tab").forEach(btn => {
   btn.addEventListener("click", () => {
+    if (btn.dataset.panel === "leaderboard" && !isAdminUser()) return;
     document.querySelectorAll(".panel-tab").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     const target = btn.dataset.panel;
@@ -1442,6 +1464,15 @@ document.querySelectorAll(".ct-btn").forEach(btn => {
     localStorage.setItem("plty_chart_type", chartType);
     drawChart();
   });
+});
+
+const whaleToggleBtn = el("whaleToggleBtn");
+whaleToggleBtn.classList.toggle("active", showWhaleBuys);
+whaleToggleBtn.addEventListener("click", () => {
+  showWhaleBuys = !showWhaleBuys;
+  localStorage.setItem("plty_whale_buys", showWhaleBuys ? "1" : "0");
+  whaleToggleBtn.classList.toggle("active", showWhaleBuys);
+  drawChart();
 });
 
 const TF_CONFIG = {
@@ -1961,7 +1992,8 @@ const WHALE_THRESHOLD = 1000; // USD — trades above this get a label
 function drawWhaleAnnotations(candles, xFor, yFor, bucketMs, firstTs, lastTs) {
   if (!ctx || !candles.length) return;
   const whaleTrades = trades.filter(t =>
-    t.ts >= firstTs && t.ts < lastTs && (t.usdAmount || 0) >= WHALE_THRESHOLD
+    t.ts >= firstTs && t.ts < lastTs && (t.usdAmount || 0) >= WHALE_THRESHOLD &&
+    (t.type === "buy" ? showWhaleBuys : true)
   );
   if (!whaleTrades.length) return;
 

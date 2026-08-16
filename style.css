@@ -258,6 +258,15 @@ a{ color:inherit; }
 .tf-btn:hover{ color:var(--text); }
 .tf-btn.active{ background:var(--toxic-dim); border-color:var(--toxic); color:var(--toxic); }
 
+.whale-toggle-btn{
+  display:flex; align-items:center; gap:5px; flex-shrink:0;
+  background:var(--surface-2); border:1px solid var(--border); color:var(--text-dim);
+  border-radius:999px; padding:6px 12px; font-size:11.5px; font-weight:600;
+  transition:all .15s; opacity:0.55;
+}
+.whale-toggle-btn:hover{ color:var(--text); }
+.whale-toggle-btn.active{ background:var(--toxic-dim); border-color:var(--toxic); color:var(--toxic); opacity:1; }
+
 .chart-wrap{
   position:relative; flex:1; min-height:320px;
   background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-l);
@@ -704,6 +713,7 @@ a{ color:inherit; }
 @media (max-width: 380px){
   .tf-btn{ padding:5px 10px; font-size:11px; }
   .ct-btn{ padding:5px 8px; font-size:10.5px; }
+  .whale-toggle-btn{ padding:5px 10px; font-size:10.5px; }
   .topbar-stats{ gap:8px; }
   .stat-value{ font-size:11.5px; }
 }
