@@ -29,7 +29,7 @@ service cloud.firestore {
         (request.auth.uid == userId
           && request.resource.data.diff(resource.data).affectedKeys()
                .hasOnly(['balance', 'holdings', 'username', 'avatarUrl',
-                         'costBasis', 'referredBy', 'referralBonuses',
+                         'costBasis', 'realizedPnl', 'referredBy', 'referralBonuses',
                          'pinnedItem', 'quickBuys', 'quickSells',
                          'buyMarkerOpacity', 'sellMarkerOpacity'])
           && request.resource.data.balance is number
