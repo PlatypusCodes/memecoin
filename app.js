@@ -113,6 +113,9 @@ let currentUser = null;
 let marketState = { price: STARTING_PRICE, marketCap: STARTING_PRICE * TOTAL_SUPPLY, lastTickIndex: 0, priceOpen24h: STARTING_PRICE, historyAnchor: null };
 let ticks = [];
 let _ticksGen = 0; // incremented whenever ticks is reassigned (not just pushed to)
+// boostTicks: tickIdx → price, populated during boost/dump so refreshing users
+// get the real boosted prices instead of recomputing from the deterministic engine.
+let _boostTicks = {}; // { [tickIdx]: price }
 let trades = [];
 let traderMap = new Map();
 let activeTF = "live";
@@ -595,6 +598,17 @@ function subscribeMarket() {
       if (marketState.historyAnchor) {
         _historyAnchor = marketState.historyAnchor; // { tickIdx, price }
       }
+      // Load stored boost/dump tick overrides so a refreshing user sees the
+      // real boosted prices rather than the deterministic recomputation.
+      if (marketState.boostTicks && typeof marketState.boostTicks === "object") {
+        _boostTicks = {};
+        for (const [k, v] of Object.entries(marketState.boostTicks)) {
+          const idx = Number(k);
+          if (isFinite(idx) && typeof v === "number" && isFinite(v) && v > 0) {
+            _boostTicks[idx] = v;
+          }
+        }
+      }
       // Seed the 24h-open day so the leader does not immediately overwrite a
       // valid priceOpen24h that was already set today.
       if (marketState._open24hDay) {
@@ -870,9 +884,15 @@ function rebuildLocalTicks(checkTriggersOnCatchup) {
   }
 
   // Collect ticks from startIdx to nowTick.
+  // If a tick was generated during a boost/dump, use the stored price from
+  // _boostTicks / Firestore boostTicks so refreshing users see the real chart.
   const newTicks = [];
   for (let i = startIdx; i <= nowTick; i++) {
-    p = stepPrice(p, i, false);
+    if (_boostTicks[i] !== undefined) {
+      p = _boostTicks[i];
+    } else {
+      p = stepPrice(p, i, false);
+    }
     newTicks.push({ price: p, ts: i * TICK_MS });
   }
   ticks = newTicks;
@@ -919,6 +939,11 @@ function advanceLocalTick() {
     price = stepPrice(price, idx, true);
     ticks.push({ price, ts: idx * TICK_MS });
     newPrices.push(price);
+    // Record boosted/dumped ticks so refreshing users see the same prices.
+    if ((_boostModeActive && Date.now() < _boostModeEndTime) ||
+        (_dumpModeActive  && Date.now() < _dumpModeEndTime)) {
+      _boostTicks[idx] = price;
+    }
   }
   if (ticks.length > MAX_TICK_HISTORY) { ticks = ticks.slice(-MAX_TICK_HISTORY); _ticksGen++; }
 
@@ -990,14 +1015,29 @@ async function maybeWriteMarket() {
     marketState._open24hDay  = todayUtc;
   }
 
+  // Persist boostTicks to Firestore so refreshing clients can replay the real
+  // boosted price chain. Only include keys from the visible window to keep the
+  // document small; prune stale keys (older than startIdx) to avoid unbounded growth.
+  const _nowTick = Math.floor(Date.now() / TICK_MS);
+  const _startIdx = Math.max(0, _nowTick - MAX_TICK_HISTORY + 1);
+  const _boostOrDumpNow = (_boostModeActive && Date.now() < _boostModeEndTime) ||
+                           (_dumpModeActive  && Date.now() < _dumpModeEndTime);
+  let boostTicksUpdate = {};
+  if (_boostOrDumpNow || Object.keys(_boostTicks).length > 0) {
+    // Prune entries older than the visible window
+    for (const k of Object.keys(_boostTicks)) {
+      if (Number(k) < _startIdx) delete _boostTicks[k];
+    }
+    boostTicksUpdate = { boostTicks: _boostTicks };
+  }
   try {
-    await updateDoc(marketRef, { price, marketCap: price * TOTAL_SUPPLY, lastTickIndex: tickIdx, ...anchorUpdate, ...open24hUpdate });
+    await updateDoc(marketRef, { price, marketCap: price * TOTAL_SUPPLY, lastTickIndex: tickIdx, ...anchorUpdate, ...open24hUpdate, ...boostTicksUpdate });
   } catch (_) {
     try {
       await setDoc(marketRef, {
         price, marketCap: price * TOTAL_SUPPLY,
         lastTickIndex: tickIdx, priceOpen24h: price, _open24hDay: todayUtc, createdAt: Date.now(),
-        ...anchorUpdate, ...open24hUpdate
+        ...anchorUpdate, ...open24hUpdate, ...boostTicksUpdate
       });
     } catch (_) {}
   }
@@ -3576,17 +3616,27 @@ el("adminBoost").addEventListener("click", () => {
       clearInterval(_adminBoostTimer);
       _adminBoostTimer = null;
       _boostModeActive = false;
-      // Final write: lock in the boosted price as the anchor before
-      // applyBoostDump stops being true, so refresh doesn't revert.
+      // Final write: lock in the boosted price + boostTicks so refreshing users
+      // see the real chart, then clear boostTicks from Firestore so they don't
+      // accumulate beyond the end of the boost.
       const _finalAnchor = { tickIdx: _lastKnownTickIdx, price: safePrice(_lastKnownPrice) };
       _historyAnchor = _finalAnchor;
+      const _finalBoostTicks = { ..._boostTicks };
       updateDoc(marketRef, {
         boostModeEndTime: 0,
         price: safePrice(_lastKnownPrice),
         marketCap: safePrice(_lastKnownPrice) * TOTAL_SUPPLY,
         lastTickIndex: _lastKnownTickIdx,
         historyAnchor: _finalAnchor,
+        boostTicks: _finalBoostTicks,
       }).catch(() => {});
+      // After a short delay (enough for non-admin clients to load the final
+      // snapshot), clear boostTicks from Firestore — they're no longer needed
+      // because rebuildLocalTicks will step forward from the locked-in anchor.
+      setTimeout(() => {
+        _boostTicks = {};
+        updateDoc(marketRef, { boostTicks: {} }).catch(() => {});
+      }, 10000);
       btn.classList.remove("active");
       status.textContent = "Price only goes up for 30 seconds 👀";
       toast("Boost ended", false);
@@ -3631,17 +3681,23 @@ el("adminDump").addEventListener("click", () => {
       clearInterval(_adminDumpTimer);
       _adminDumpTimer = null;
       _dumpModeActive = false;
-      // Final write: lock in the dumped price as the anchor before
-      // applyBoostDump stops being true, so refresh doesn't revert.
+      // Final write: lock in the dumped price + boostTicks so refreshing users
+      // see the real chart, then clear boostTicks from Firestore.
       const _finalAnchor = { tickIdx: _lastKnownTickIdx, price: safePrice(_lastKnownPrice) };
       _historyAnchor = _finalAnchor;
+      const _finalBoostTicks = { ..._boostTicks };
       updateDoc(marketRef, {
         dumpModeEndTime: 0,
         price: safePrice(_lastKnownPrice),
         marketCap: safePrice(_lastKnownPrice) * TOTAL_SUPPLY,
         lastTickIndex: _lastKnownTickIdx,
         historyAnchor: _finalAnchor,
+        boostTicks: _finalBoostTicks,
       }).catch(() => {});
+      setTimeout(() => {
+        _boostTicks = {};
+        updateDoc(marketRef, { boostTicks: {} }).catch(() => {});
+      }, 10000);
       btn.classList.remove("active");
       status.textContent = "Price only goes up for 30 seconds 👀";
       toast("Dump ended", false);
