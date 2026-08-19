@@ -48,7 +48,8 @@ service cloud.firestore {
               || (request.resource.data.shortPosition.size is number
                   && request.resource.data.shortPosition.size >= 0
                   && request.resource.data.shortPosition.entryPrice is number
-                  && request.resource.data.shortPosition.entryPrice > 0)))
+                  && request.resource.data.shortPosition.entryPrice > 0
+                  && (request.resource.data.shortPosition.get('notional', 0) is number))))
         || isAdmin()
       );
 
@@ -92,7 +93,7 @@ service cloud.firestore {
 
       allow create: if request.auth != null
         && request.resource.data.uid == request.auth.uid
-        && request.resource.data.type in ['buy', 'sell', 'short', 'cover']
+        && request.resource.data.type in ['buy', 'sell', 'short', 'cover', 'short_open', 'short_close']
         && request.resource.data.usdAmount is number
         && request.resource.data.usdAmount >= 0
         && request.resource.data.price is number
