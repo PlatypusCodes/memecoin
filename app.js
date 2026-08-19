@@ -2583,10 +2583,6 @@ function openSheet(mode) {
   el("tradeSheet").classList.toggle("shorting", mode === "short");
   // Show/hide calling-it field (not relevant for shorts)
   el("callingItInput").closest(".calling-it-wrap").style.display = mode === "short" ? "none" : "";
-  // Reset direction toggle — default bull for buys, bear for sells
-  document.querySelectorAll(".dir-btn").forEach(b => b.classList.remove("active"));
-  if (mode === "buy") document.getElementById("dirBull").classList.add("active");
-  else if (mode === "sell") document.getElementById("dirBear").classList.add("active");
   resetSlider();
 
   // Auto-apply max if the user chose it last time for this mode
@@ -2618,14 +2614,6 @@ el("coverShortBtn").addEventListener("click", async () => {
     el("coverShortBtn").disabled = false;
     el("coverShortBtn").textContent = "Cover";
   }
-});
-
-// Direction toggle for calling-it prediction
-document.querySelectorAll(".dir-btn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".dir-btn").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-  });
 });
 
 el("openBuy").addEventListener("click", () => openSheet("buy"));
@@ -2756,8 +2744,6 @@ async function confirmTrade(isQuick = false) {
   slideTrackWrap.querySelector(".slide-track").classList.add("confirmed");
 
   const callingIt = el("callingItInput").value.trim().slice(0, 60);
-  const selectedDirBtn = document.querySelector(".dir-btn.active");
-  const selectedDirection = selectedDirBtn ? selectedDirBtn.dataset.dir : "";
 
   try {
     _lastTradeWasLocal = false;
@@ -2940,7 +2926,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
         tx.set(tradeDoc, {
           uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
           type: "buy", usdAmount, coinAmount, price, displayPrice: livePrice, callingIt: callingIt || "",
-          direction: callingIt ? "bull" : "",
+          direction: "bull",
           tsFallback: clickTs, timestamp: serverTimestamp()
         });
       } else {
@@ -2971,7 +2957,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
         tx.set(tradeDoc, {
           uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
           type: "sell", usdAmount: usdReceived, coinAmount, price, displayPrice: priceNow, callingIt: callingIt || "",
-          direction: direction || "",
+          direction: "",
           tsFallback: clickTs, timestamp: serverTimestamp()
         });
       }
@@ -2988,7 +2974,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
     if (isQuotaErr && mode === "sell") {
       _firestoreQuotaExceeded = true;
       _lastTradeWasLocal = true;
-      _executeLocalSell(usdAmount, sellAll, callingIt, direction);
+      _executeLocalSell(usdAmount, sellAll, callingIt, "");
       return; // local sell succeeded — don't throw
     }
 
