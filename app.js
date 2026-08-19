@@ -64,7 +64,9 @@ function safePrice(p) {
   // Guard against NaN / Infinity / negative / zero corrupting the price chain.
   return (typeof p === "number" && isFinite(p) && p > 0) ? p : STARTING_PRICE;
 }
-function stepPrice(price, tickIdx) {
+// applyBoostDump: pass false when rebuilding historical ticks so boost/dump
+// is never applied retroactively. Only live ticks (advanceLocalTick) pass true.
+function stepPrice(price, tickIdx, applyBoostDump) {
   price = safePrice(price);
   const r1 = seededRandom(tickIdx, 1);
   const r2 = seededRandom(tickIdx, 2);
@@ -88,17 +90,20 @@ function stepPrice(price, tickIdx) {
   } else if (ratio > 8) {
     changePct -= 0.02;
   }
-  // Boost mode: if active, force price upward only
-  if (_boostModeActive && Date.now() < _boostModeEndTime) {
-    changePct = Math.abs(changePct) + 0.02;
-  } else if (_boostModeActive) {
-    _boostModeActive = false;
-  }
-  // Dump mode: if active, force price downward only
-  if (_dumpModeActive && Date.now() < _dumpModeEndTime) {
-    changePct = -(Math.abs(changePct) + 0.02);
-  } else if (_dumpModeActive) {
-    _dumpModeActive = false;
+  // Boost/dump mode: only apply to live ticks, never during history rebuilds.
+  // Applying these to historical ticks causes exponential e+ price divergence
+  // on non-admin clients when they receive the boost/dump Firestore snapshot.
+  if (applyBoostDump) {
+    if (_boostModeActive && Date.now() < _boostModeEndTime) {
+      changePct = Math.abs(changePct) + 0.02;
+    } else if (_boostModeActive) {
+      _boostModeActive = false;
+    }
+    if (_dumpModeActive && Date.now() < _dumpModeEndTime) {
+      changePct = -(Math.abs(changePct) + 0.02);
+    } else if (_dumpModeActive) {
+      _dumpModeActive = false;
+    }
   }
   return Math.max(price * (1 + changePct), STARTING_PRICE * 0.05);
 }
@@ -835,7 +840,7 @@ function rebuildLocalTicks(checkTriggersOnCatchup) {
     seedIdx = _historyAnchor.tickIdx;
     // Walk forward from anchor to just before startIdx (no-op when anchor >= startIdx).
     for (let i = seedIdx + 1; i < startIdx; i++) {
-      p = stepPrice(p, i);
+      p = stepPrice(p, i, false);
     }
     // If anchor is past startIdx, the collection loop below starts at anchor+1
     // and we push a synthetic entry for startIdx using the walked price — the
@@ -860,14 +865,14 @@ function rebuildLocalTicks(checkTriggersOnCatchup) {
   // Candidates 1 and 3 already landed at startIdx - 1 above).
   if (seedIdx >= 0 && seedIdx < startIdx - 1) {
     for (let i = seedIdx + 1; i < startIdx; i++) {
-      p = stepPrice(p, i);
+      p = stepPrice(p, i, false);
     }
   }
 
   // Collect ticks from startIdx to nowTick.
   const newTicks = [];
   for (let i = startIdx; i <= nowTick; i++) {
-    p = stepPrice(p, i);
+    p = stepPrice(p, i, false);
     newTicks.push({ price: p, ts: i * TICK_MS });
   }
   ticks = newTicks;
@@ -911,7 +916,7 @@ function advanceLocalTick() {
   const newPrices = [];
   for (let i = 1; i <= steps; i++) {
     const idx = lastIdx + i;
-    price = stepPrice(price, idx);
+    price = stepPrice(price, idx, true);
     ticks.push({ price, ts: idx * TICK_MS });
     newPrices.push(price);
   }
