@@ -582,7 +582,7 @@
 <div class="tutorial-overlay hidden" id="tutorialOverlay">
   <div class="tutorial-modal">
     <div class="tutorial-header">
-      <span class="tutorial-logo">📈</span>
+      <img class="auth-logo" src="https://avatars.githubusercontent.com/u/298894342?s=60&v=4" alt="Platypus" style="width:32px;height:32px;border-radius:50%;" />
       <div>
         <h2 class="tutorial-title">How to Play Platypus</h2>
         <p class="tutorial-subtitle">The memecoin trading simulator</p>
@@ -600,180 +600,287 @@
 
     <!-- BASICS -->
     <div class="tutorial-page active" data-tut="basics">
-      <div class="tut-section">
-        <div class="tut-icon">🪙</div>
-        <h3>Welcome to Platypus</h3>
-        <p>You start with <strong>$1,000 virtual cash</strong>. Your goal: grow your portfolio by trading <strong>$PLTY</strong>, a simulated memecoin whose price moves in real-time based on what everyone is doing.</p>
+      <div class="tut-vis-hero">
+        <svg class="tut-chart-svg" viewBox="0 0 320 110" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#7cff6b" stop-opacity="0.22"/>
+              <stop offset="100%" stop-color="#7cff6b" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <!-- area fill -->
+          <path class="tut-chart-area" d="M10,80 L40,68 L70,72 L100,55 L130,60 L160,42 L190,48 L220,30 L250,22 L280,15 L310,10 L310,100 L10,100 Z" fill="url(#chartGrad)"/>
+          <!-- line -->
+          <path class="tut-chart-line" d="M10,80 L40,68 L70,72 L100,55 L130,60 L160,42 L190,48 L220,30 L250,22 L280,15 L310,10" fill="none" stroke="#7cff6b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- buy marker -->
+          <g class="tut-buy-marker">
+            <circle cx="100" cy="55" r="10" fill="rgba(124,255,107,0.15)" stroke="#7cff6b" stroke-width="1.2"/>
+            <text x="100" y="59" text-anchor="middle" font-size="10" fill="#7cff6b">▲</text>
+          </g>
+          <!-- sell marker -->
+          <g class="tut-sell-marker">
+            <circle cx="220" cy="30" r="10" fill="rgba(255,61,110,0.15)" stroke="#ff3d6e" stroke-width="1.2"/>
+            <text x="220" y="34" text-anchor="middle" font-size="10" fill="#ff3d6e">▼</text>
+          </g>
+          <!-- whale marker -->
+          <g class="tut-whale-marker">
+            <rect x="240" y="4" width="38" height="16" rx="8" fill="rgba(255,201,77,0.15)" stroke="#ffc94d" stroke-width="1"/>
+            <text x="259" y="15" text-anchor="middle" font-size="9" fill="#ffc94d">🐋 whale</text>
+          </g>
+          <!-- price tag -->
+          <g>
+            <rect x="270" y="2" width="46" height="14" rx="4" fill="rgba(124,255,107,0.12)" stroke="rgba(124,255,107,0.3)" stroke-width="0.8"/>
+            <text x="293" y="12" text-anchor="middle" font-size="8.5" fill="#7cff6b" font-weight="700">$0.00042</text>
+          </g>
+        </svg>
+        <div class="tut-vis-legend">
+          <span class="tut-legend-item green">▲ Buy</span>
+          <span class="tut-legend-item red">▼ Sell</span>
+          <span class="tut-legend-item yellow">🐋 Whale</span>
+        </div>
       </div>
-      <div class="tut-cards">
-        <div class="tut-card green">
-          <span class="tut-card-icon">📊</span>
-          <strong>Live Chart</strong>
-          <p>Candlestick chart showing price history. Every buy and sell — including yours — appears as a marker.</p>
+
+      <p class="tut-lead">You start with <strong>$10,000 virtual cash</strong>. Grow your portfolio by trading <strong>$PLTY</strong> — a simulated memecoin whose price moves in real-time based on what everyone is doing.</p>
+
+      <div class="tut-3col">
+        <div class="tut-pill green">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polyline points="2,13 6,8 10,10 16,4" stroke="#7cff6b" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div><strong>Live Chart</strong><span>Candlestick or line — every trade leaves a marker</span></div>
         </div>
-        <div class="tut-card purple">
-          <span class="tut-card-icon">👥</span>
-          <strong>Live Feed</strong>
-          <p>See every trade made by every player in real-time. Watch for whale moves and follow the smart money.</p>
+        <div class="tut-pill purple">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="7" r="3" stroke="#a78bfa" stroke-width="1.6"/><path d="M3 15c0-3.3 2.7-6 6-6s6 2.7 6 6" stroke="#a78bfa" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <div><strong>Live Feed</strong><span>See every trade from every player in real-time</span></div>
         </div>
-        <div class="tut-card blue">
-          <span class="tut-card-icon">🏆</span>
-          <strong>Leaderboard</strong>
-          <p>Compete against other traders. Rankings update live. Portfolio, shorts, and prediction accuracy all tracked.</p>
+        <div class="tut-pill blue">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="9,2 11.5,7 17,7.6 13,11.4 14,17 9,14.2 4,17 5,11.4 1,7.6 6.5,7" stroke="#38bdf8" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg>
+          <div><strong>Leaderboard</strong><span>Rankings update live — portfolio, shorts &amp; accuracy</span></div>
         </div>
       </div>
     </div>
 
     <!-- TRADING -->
     <div class="tutorial-page hidden" data-tut="trading">
-      <div class="tut-section">
-        <div class="tut-icon">💸</div>
-        <h3>Buying &amp; Selling</h3>
-        <p>Tap <strong>BUY</strong> or <strong>SELL</strong> to open the trade sheet. Enter a USD amount or use the quick buttons.</p>
+      <!-- animated trade panel mockup -->
+      <div class="tut-vis-panel">
+        <div class="tut-mock-panel">
+          <div class="tut-mock-row">
+            <span class="tut-mock-label">Amount (USD)</span>
+            <div class="tut-mock-input">$250</div>
+          </div>
+          <div class="tut-mock-quickbtns">
+            <span class="tut-mock-qbtn">$25</span>
+            <span class="tut-mock-qbtn active">$100</span>
+            <span class="tut-mock-qbtn">$500</span>
+          </div>
+          <div class="tut-mock-prediction">
+            <span class="tut-mock-plabel">Calling it… <span class="tut-mock-optional">optional</span></span>
+            <div class="tut-mock-pred-input">moon incoming 🚀</div>
+          </div>
+          <div class="tut-mock-actions">
+            <div class="tut-mock-sell-btn">SELL</div>
+            <div class="tut-mock-buy-btn">BUY $PLTY</div>
+          </div>
+        </div>
+        <div class="tut-mock-annotations">
+          <div class="tut-annotation" style="top:8px;right:-8px">
+            <div class="tut-ann-line" style="width:48px;border-color:#fbbf24"></div>
+            <div class="tut-ann-bubble" style="border-color:#fbbf24;color:#fbbf24">Quick presets — customisable in Wallet</div>
+          </div>
+          <div class="tut-annotation" style="top:62px;right:-8px">
+            <div class="tut-ann-line" style="width:48px;border-color:#a78bfa"></div>
+            <div class="tut-ann-bubble" style="border-color:#a78bfa;color:#a78bfa">Predict direction → climb accuracy board</div>
+          </div>
+        </div>
       </div>
-      <div class="tut-steps">
-        <div class="tut-step">
-          <span class="tut-step-num green">1</span>
-          <div>
-            <strong>Tap BUY</strong>
-            <p>Enter how many dollars of $PLTY you want. Your buy pushes the price up slightly (market impact).</p>
-          </div>
+
+      <div class="tut-impact-row">
+        <div class="tut-impact buy">
+          <div class="tut-impact-icon">▲</div>
+          <div class="tut-impact-text"><strong>BUY pushes price up</strong><br><span>Market impact scales with size</span></div>
         </div>
-        <div class="tut-step">
-          <span class="tut-step-num red">2</span>
-          <div>
-            <strong>Tap SELL</strong>
-            <p>Enter what % of your holdings to sell. Larger sells push the price down — time it right.</p>
-          </div>
-        </div>
-        <div class="tut-step">
-          <span class="tut-step-num yellow">3</span>
-          <div>
-            <strong>"Calling It" Predictions</strong>
-            <p>Before trading, optionally write a prediction like <em>"dumping soon 📉"</em>. If you're right, it shows on the leaderboard accuracy tab.</p>
-          </div>
-        </div>
-        <div class="tut-step">
-          <span class="tut-step-num blue">4</span>
-          <div>
-            <strong>Quick Buttons</strong>
-            <p>Customise the quick-buy ($25/$100/$500) and quick-sell (25%/50%/100%) buttons in Wallet settings.</p>
-          </div>
+        <div class="tut-impact sell">
+          <div class="tut-impact-icon">▼</div>
+          <div class="tut-impact-text"><strong>SELL pushes price down</strong><br><span>Enter % of holdings to sell</span></div>
         </div>
       </div>
       <div class="tut-note">
-        💡 Your trades appear as <span style="color:#7cff6b">green ▲</span> (buy) and <span style="color:#ff3d6e">red ▼</span> (sell) avatar markers on the chart.
+        💡 Your trades appear as <span style="color:#7cff6b">green ▲</span> buy and <span style="color:#ff3d6e">red ▼</span> sell avatar markers on the chart.
       </div>
     </div>
 
     <!-- SHORTS -->
     <div class="tutorial-page hidden" data-tut="shorts">
-      <div class="tut-section">
-        <div class="tut-icon">📉</div>
-        <h3>Short Selling</h3>
-        <p>Think the price is going to crash? <strong>Open a short</strong> to profit when it falls. There's a <strong>10% opening fee</strong> (cost to borrow).</p>
+      <!-- shorts diagram -->
+      <div class="tut-short-diagram">
+        <svg viewBox="0 0 320 130" xmlns="http://www.w3.org/2000/svg" class="tut-short-svg">
+          <defs>
+            <marker id="arr-down" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" fill="#ff3d6e"/>
+            </marker>
+            <marker id="arr-green" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" fill="#7cff6b"/>
+            </marker>
+          </defs>
+          <!-- baseline -->
+          <line x1="20" y1="60" x2="300" y2="60" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+          <!-- price goes down -->
+          <path d="M60,40 L160,90" stroke="#ff3d6e" stroke-width="2" stroke-dasharray="4,3" stroke-linecap="round"/>
+          <!-- open short marker -->
+          <g>
+            <rect x="36" y="26" width="50" height="18" rx="9" fill="rgba(167,139,250,0.18)" stroke="#a78bfa" stroke-width="1"/>
+            <text x="61" y="38" text-anchor="middle" font-size="8.5" fill="#a78bfa" font-weight="700">◆ SHORT</text>
+          </g>
+          <line x1="61" y1="44" x2="61" y2="38" stroke="#a78bfa" stroke-width="1" stroke-dasharray="2,2"/>
+          <circle cx="61" cy="40" r="3" fill="#a78bfa"/>
+          <!-- cover short marker -->
+          <g>
+            <rect x="136" y="90" width="50" height="18" rx="9" fill="rgba(124,255,107,0.15)" stroke="#7cff6b" stroke-width="1"/>
+            <text x="161" y="102" text-anchor="middle" font-size="8.5" fill="#7cff6b" font-weight="700">◆ COVER</text>
+          </g>
+          <circle cx="161" cy="90" r="3" fill="#7cff6b"/>
+          <!-- profit arrow -->
+          <line x1="220" y1="40" x2="220" y2="88" stroke="#7cff6b" stroke-width="1.4" marker-end="url(#arr-green)"/>
+          <rect x="228" y="55" width="62" height="18" rx="4" fill="rgba(124,255,107,0.1)" stroke="rgba(124,255,107,0.25)" stroke-width="0.8"/>
+          <text x="259" y="67" text-anchor="middle" font-size="9" fill="#7cff6b" font-weight="700">+$20 profit</text>
+          <!-- fee burn -->
+          <text x="61" y="16" text-anchor="middle" font-size="8" fill="rgba(255,61,110,0.7)">–$10 fee</text>
+          <!-- labels -->
+          <text x="20" y="108" font-size="8" fill="rgba(255,255,255,0.25)">Entry price</text>
+          <text x="140" y="120" font-size="8" fill="rgba(255,255,255,0.25)">Cover price (–20%)</text>
+        </svg>
       </div>
-      <div class="tut-steps">
-        <div class="tut-step">
-          <span class="tut-step-num purple">1</span>
-          <div>
-            <strong>Open Short</strong>
-            <p>Tap <strong>SHORT</strong> and enter an amount. $100 short = $10 fee burned, $90 collateral locked. Your position opens at the current price.</p>
-          </div>
+
+      <div class="tut-short-breakdown">
+        <div class="tut-breakdown-row">
+          <span class="tut-bd-label">You put in</span>
+          <span class="tut-bd-val">$100</span>
         </div>
-        <div class="tut-step">
-          <span class="tut-step-num purple">2</span>
-          <div>
-            <strong>Price Falls → You Profit</strong>
-            <p>Profit = notional × price drop %. Price drops 20% on a $100 short = +$20 profit. Cover to collect.</p>
-          </div>
+        <div class="tut-breakdown-row">
+          <span class="tut-bd-label">Opening fee (10%)</span>
+          <span class="tut-bd-val red">–$10 🔥</span>
         </div>
-        <div class="tut-step">
-          <span class="tut-step-num red">3</span>
-          <div>
-            <strong>Price Rises → You Lose</strong>
-            <p>Max loss is capped at your collateral ($90). You can't lose more than you put in.</p>
-          </div>
+        <div class="tut-breakdown-row">
+          <span class="tut-bd-label">Collateral locked</span>
+          <span class="tut-bd-val">$90</span>
         </div>
-        <div class="tut-step">
-          <span class="tut-step-num green">4</span>
-          <div>
-            <strong>Cover Short</strong>
-            <p>Tap <strong>COVER SHORT</strong> in your wallet to close the position and collect payout. Short opens and closes show as <span style="color:#a78bfa">purple ◆</span> markers on the chart.</p>
-          </div>
+        <div class="tut-breakdown-row">
+          <span class="tut-bd-label">Price drops 20% → profit</span>
+          <span class="tut-bd-val green">+$20 💰</span>
+        </div>
+        <div class="tut-breakdown-row">
+          <span class="tut-bd-label">Max loss (price moons)</span>
+          <span class="tut-bd-val red">–$90 cap</span>
         </div>
       </div>
-      <div class="tut-note">
+      <div class="tut-note" style="margin-top:10px;">
         ⚠️ You can only hold <strong>one short at a time</strong>. Cover before opening a new one.
       </div>
     </div>
 
     <!-- SOCIAL -->
     <div class="tutorial-page hidden" data-tut="social">
-      <div class="tut-section">
-        <div class="tut-icon">🌐</div>
-        <h3>Social Features</h3>
-        <p>Platypus is a multiplayer experience. Every action is visible to all traders.</p>
+      <div class="tut-social-grid">
+        <!-- feed mockup -->
+        <div class="tut-social-card">
+          <div class="tut-scard-header green">Live Feed</div>
+          <div class="tut-feed-mock">
+            <div class="tut-feed-item">
+              <div class="tut-feed-avatar" style="background:#7cff6b22;border-color:#7cff6b44">🐬</div>
+              <div class="tut-feed-info">
+                <span class="tut-feed-name">whale_watcher</span>
+                <span class="tut-feed-action green">bought $1,200</span>
+              </div>
+            </div>
+            <div class="tut-feed-item">
+              <div class="tut-feed-avatar" style="background:#ff3d6e22;border-color:#ff3d6e44">🦊</div>
+              <div class="tut-feed-info">
+                <span class="tut-feed-name">fox_trader</span>
+                <span class="tut-feed-action red">sold 50%</span>
+              </div>
+            </div>
+            <div class="tut-feed-item">
+              <div class="tut-feed-avatar" style="background:#a78bfa22;border-color:#a78bfa44">🐙</div>
+              <div class="tut-feed-info">
+                <span class="tut-feed-name">octo_labs</span>
+                <span class="tut-feed-action purple">shorted $300</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- leaderboard mockup -->
+        <div class="tut-social-card">
+          <div class="tut-scard-header blue">Leaderboard</div>
+          <div class="tut-lb-mock">
+            <div class="tut-lb-row gold">
+              <span class="tut-lb-rank">🥇</span>
+              <span class="tut-lb-name">whale_watcher</span>
+              <span class="tut-lb-val">$24,810</span>
+            </div>
+            <div class="tut-lb-row">
+              <span class="tut-lb-rank">2</span>
+              <span class="tut-lb-name">fox_trader</span>
+              <span class="tut-lb-val">$18,330</span>
+            </div>
+            <div class="tut-lb-row you">
+              <span class="tut-lb-rank">3</span>
+              <span class="tut-lb-name">you</span>
+              <span class="tut-lb-val">$12,500</span>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="tut-cards">
-        <div class="tut-card green">
-          <span class="tut-card-icon">🐋</span>
-          <strong>Whale Alerts</strong>
-          <p>Trades over $1,000 get a whale 🐋 or dolphin 🐬 annotation on the chart. Watch for them — they move markets.</p>
+      <div class="tut-social-features">
+        <div class="tut-sfeat">
+          <span>👤</span>
+          <div><strong>Tap any avatar</strong> in the feed or chart to see full trader stats &amp; history</div>
         </div>
-        <div class="tut-card purple">
-          <span class="tut-card-icon">👤</span>
-          <strong>Trader Profiles</strong>
-          <p>Tap any avatar in the feed or chart to view that trader's stats, history, and PnL. Learn from the best.</p>
+        <div class="tut-sfeat">
+          <span>📌</span>
+          <div><strong>Pin your best trades</strong> to your profile via the profile chip (top-right)</div>
         </div>
-        <div class="tut-card blue">
-          <span class="tut-card-icon">📌</span>
-          <strong>Pin Trades</strong>
-          <p>Pin your best trades to your profile to flex on the competition. Access via your profile chip (top-right).</p>
-        </div>
-        <div class="tut-card yellow">
-          <span class="tut-card-icon">🎯</span>
-          <strong>Accuracy Board</strong>
-          <p>The accuracy leaderboard ranks who best predicts market direction. Make predictions on every trade to climb it.</p>
+        <div class="tut-sfeat">
+          <span>🎯</span>
+          <div><strong>Accuracy board</strong> ranks who best calls market direction — predict every trade</div>
         </div>
       </div>
     </div>
 
     <!-- PRO TIPS -->
     <div class="tutorial-page hidden" data-tut="tips">
-      <div class="tut-section">
-        <div class="tut-icon">🧠</div>
-        <h3>Pro Tips</h3>
-        <p>Strategies used by top-ranked traders.</p>
+      <div class="tut-tips-grid">
+        <div class="tut-tip-card">
+          <div class="tut-tip-icon">📊</div>
+          <strong>Read the feed first</strong>
+          <p>Multiple buys in a row = uptrend. Follow the momentum or fade it — your call.</p>
+        </div>
+        <div class="tut-tip-card">
+          <div class="tut-tip-icon">⏱️</div>
+          <strong>Short the whale pump</strong>
+          <p>After a big whale buy, price often retraces. Short the peak, cover the bottom.</p>
+        </div>
+        <div class="tut-tip-card">
+          <div class="tut-tip-icon">💎</div>
+          <strong>Diamond hands vs flips</strong>
+          <p>Long-term holders compound gains. Quick traders need precision — market impact eats thin margins.</p>
+        </div>
+        <div class="tut-tip-card">
+          <div class="tut-tip-icon">🎯</div>
+          <strong>Predict every trade</strong>
+          <p>Even wrong predictions build your accuracy history. Consistent calling = top of accuracy board.</p>
+        </div>
+        <div class="tut-tip-card">
+          <div class="tut-tip-icon">🐋</div>
+          <strong>Watch whale markers</strong>
+          <p>Trades over $1,000 create visible chart impact. Anticipate the aftermath before it hits.</p>
+        </div>
+        <div class="tut-tip-card">
+          <div class="tut-tip-icon">💰</div>
+          <strong>Keep dry powder</strong>
+          <p>Don't FOMO all-in. Reserve cash lets you buy dips and open shorts when chances appear.</p>
+        </div>
       </div>
-      <div class="tut-tips">
-        <div class="tut-tip">
-          <span>📊</span>
-          <div><strong>Watch the feed before trading.</strong> If you see multiple buys in a row, price is trending up. Follow the momentum or fade it — your call.</div>
-        </div>
-        <div class="tut-tip">
-          <span>⏱️</span>
-          <div><strong>Time your shorts.</strong> After a large whale buy, price often retraces. Open a short at the peak and cover near the bottom.</div>
-        </div>
-        <div class="tut-tip">
-          <span>💎</span>
-          <div><strong>Diamond hands vs quick flips.</strong> Long-term holders benefit from compounding. Quick traders need to nail timing — market impact eats into thin margins.</div>
-        </div>
-        <div class="tut-tip">
-          <span>🎯</span>
-          <div><strong>Make predictions every trade.</strong> Even if you're wrong, building accuracy history gets you on the accuracy leaderboard.</div>
-        </div>
-        <div class="tut-tip">
-          <span>🐋</span>
-          <div><strong>Watch for whale markers on the chart.</strong> Big trades create visible price impact — anticipate the aftermath.</div>
-        </div>
-        <div class="tut-tip">
-          <span>💰</span>
-          <div><strong>Don't FOMO all-in.</strong> Keep some cash reserve so you can buy dips or open shorts when opportunities appear.</div>
-        </div>
-      </div>
-      <div class="tut-note" style="margin-top:16px;">
-        🏆 Top of the leaderboard = <strong>portfolio value</strong> (cash + holdings + short PnL). Grow everything.
+      <div class="tut-note" style="margin-top:12px;">
+        🏆 Leaderboard rank = <strong>portfolio value</strong> (cash + holdings + short PnL). Grow everything.
       </div>
     </div>
 
