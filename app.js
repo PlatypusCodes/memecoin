@@ -954,8 +954,13 @@ let _anchorWriteCounter = ANCHOR_WRITE_EVERY - 1;
 async function maybeWriteMarket() {
   if (!_isLeader) return;
   _ticksSinceWrite++;
-  if (_ticksSinceWrite < MARKET_WRITE_EVERY) return;
-  _ticksSinceWrite = 0;
+  // During boost/dump, write every tick so the Firestore anchor always reflects
+  // the boosted price. Without this, on refresh rebuildLocalTicks recomputes
+  // from a stale anchor and loses all the boost gains.
+  const _boostOrDumpActive = (_boostModeActive && Date.now() < _boostModeEndTime) ||
+                              (_dumpModeActive  && Date.now() < _dumpModeEndTime);
+  if (!_boostOrDumpActive && _ticksSinceWrite < MARKET_WRITE_EVERY) return;
+  if (!_boostOrDumpActive) _ticksSinceWrite = 0;
 
   const price   = safePrice(_lastKnownPrice);
   const tickIdx = _lastKnownTickIdx;
@@ -3571,7 +3576,17 @@ el("adminBoost").addEventListener("click", () => {
       clearInterval(_adminBoostTimer);
       _adminBoostTimer = null;
       _boostModeActive = false;
-      updateDoc(marketRef, { boostModeEndTime: 0 }).catch(() => {});
+      // Final write: lock in the boosted price as the anchor before
+      // applyBoostDump stops being true, so refresh doesn't revert.
+      const _finalAnchor = { tickIdx: _lastKnownTickIdx, price: safePrice(_lastKnownPrice) };
+      _historyAnchor = _finalAnchor;
+      updateDoc(marketRef, {
+        boostModeEndTime: 0,
+        price: safePrice(_lastKnownPrice),
+        marketCap: safePrice(_lastKnownPrice) * TOTAL_SUPPLY,
+        lastTickIndex: _lastKnownTickIdx,
+        historyAnchor: _finalAnchor,
+      }).catch(() => {});
       btn.classList.remove("active");
       status.textContent = "Price only goes up for 30 seconds 👀";
       toast("Boost ended", false);
@@ -3616,7 +3631,17 @@ el("adminDump").addEventListener("click", () => {
       clearInterval(_adminDumpTimer);
       _adminDumpTimer = null;
       _dumpModeActive = false;
-      updateDoc(marketRef, { dumpModeEndTime: 0 }).catch(() => {});
+      // Final write: lock in the dumped price as the anchor before
+      // applyBoostDump stops being true, so refresh doesn't revert.
+      const _finalAnchor = { tickIdx: _lastKnownTickIdx, price: safePrice(_lastKnownPrice) };
+      _historyAnchor = _finalAnchor;
+      updateDoc(marketRef, {
+        dumpModeEndTime: 0,
+        price: safePrice(_lastKnownPrice),
+        marketCap: safePrice(_lastKnownPrice) * TOTAL_SUPPLY,
+        lastTickIndex: _lastKnownTickIdx,
+        historyAnchor: _finalAnchor,
+      }).catch(() => {});
       btn.classList.remove("active");
       status.textContent = "Price only goes up for 30 seconds 👀";
       toast("Dump ended", false);
