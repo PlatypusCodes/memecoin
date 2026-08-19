@@ -549,6 +549,8 @@ function subscribeMarket() {
     // Sync boost/dump mode from Firestore so all tabs see the admin's pump/dump.
     // boostModeEndTime / dumpModeEndTime are absolute epoch-ms timestamps written
     // by the admin tab; every tab compares them against its own Date.now() in stepPrice.
+    const _boostJustActivated = !_boostModeActive && marketState.boostModeEndTime && marketState.boostModeEndTime > Date.now();
+    const _dumpJustActivated  = !_dumpModeActive  && marketState.dumpModeEndTime  && marketState.dumpModeEndTime  > Date.now();
     if (marketState.boostModeEndTime && marketState.boostModeEndTime > Date.now()) {
       _boostModeActive  = true;
       _boostModeEndTime = marketState.boostModeEndTime;
@@ -561,6 +563,17 @@ function subscribeMarket() {
       // Both expired or absent — clear local state.
       _boostModeActive = false;
       _dumpModeActive  = false;
+    }
+
+    // When boost/dump just activated on a non-admin tab, reseed the local price
+    // state from the Firestore snapshot the admin just wrote.  Without this,
+    // rebuildLocalTicks() re-applies boost/dump to every historical tick and
+    // produces a massively divergent (e+) price chain.
+    if ((_boostJustActivated || _dumpJustActivated) && marketState.historyAnchor && marketState.lastTickIndex) {
+      _historyAnchor    = marketState.historyAnchor;
+      _lastKnownTickIdx = marketState.lastTickIndex;
+      _lastKnownPrice   = safePrice(marketState.price);
+      rebuildLocalTicks(false);
     }
 
     // On first real snapshot: seed local price state from Firestore and
@@ -3524,8 +3537,19 @@ el("adminBoost").addEventListener("click", () => {
   _boostModeActive = true;
   _dumpModeActive = false;
   _boostModeEndTime = Date.now() + 30000;
-  // Write to Firestore so all tabs pick it up via subscribeMarket snapshot.
-  updateDoc(marketRef, { boostModeEndTime: _boostModeEndTime, dumpModeEndTime: 0 }).catch(() => {});
+  // Write current price + anchor alongside the boost flag so non-admin clients
+  // seed from the real price at activation time instead of recomputing history
+  // with boost applied retroactively (which causes massive e+ divergence).
+  const _anchorNow = { tickIdx: _lastKnownTickIdx, price: safePrice(_lastKnownPrice) };
+  _historyAnchor = _anchorNow;
+  updateDoc(marketRef, {
+    boostModeEndTime: _boostModeEndTime,
+    dumpModeEndTime: 0,
+    price: safePrice(_lastKnownPrice),
+    marketCap: safePrice(_lastKnownPrice) * TOTAL_SUPPLY,
+    lastTickIndex: _lastKnownTickIdx,
+    historyAnchor: _anchorNow,
+  }).catch(() => {});
   const btn = el("adminBoost");
   const status = el("adminBoostStatus");
   btn.classList.add("active");
@@ -3558,8 +3582,19 @@ el("adminDump").addEventListener("click", () => {
   _dumpModeActive = true;
   _boostModeActive = false;
   _dumpModeEndTime = Date.now() + 30000;
-  // Write to Firestore so all tabs pick it up via subscribeMarket snapshot.
-  updateDoc(marketRef, { dumpModeEndTime: _dumpModeEndTime, boostModeEndTime: 0 }).catch(() => {});
+  // Write current price + anchor alongside the dump flag so non-admin clients
+  // seed from the real price at activation time instead of recomputing history
+  // with dump applied retroactively (which causes massive e+ divergence).
+  const _anchorNow = { tickIdx: _lastKnownTickIdx, price: safePrice(_lastKnownPrice) };
+  _historyAnchor = _anchorNow;
+  updateDoc(marketRef, {
+    dumpModeEndTime: _dumpModeEndTime,
+    boostModeEndTime: 0,
+    price: safePrice(_lastKnownPrice),
+    marketCap: safePrice(_lastKnownPrice) * TOTAL_SUPPLY,
+    lastTickIndex: _lastKnownTickIdx,
+    historyAnchor: _anchorNow,
+  }).catch(() => {});
   const btn = el("adminDump");
   const status = el("adminBoostStatus");
   btn.classList.add("active");
