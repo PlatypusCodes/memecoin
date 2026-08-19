@@ -1367,7 +1367,7 @@ function priceNTicksAfter(tradeTs, nTicks) {
 
 // Compute accuracy result for a single trade: "hit", "miss", or null (pending/no call)
 function evalCallAccuracy(trade) {
-  if (!trade.callingIt || !trade.direction) return null;
+  if (!trade.direction) return null;
   const entryPrice = trade.displayPrice || trade.price;
   if (!entryPrice) return null;
   const laterPrice = priceNTicksAfter(trade.ts, ACCURACY_EVAL_TICKS);
@@ -1380,7 +1380,7 @@ function evalCallAccuracy(trade) {
 
 // Compute accuracy stats for a uid from the trades array
 function computeAccuracyStats(uid) {
-  const callers = trades.filter(t => t.uid === uid && t.callingIt && t.direction);
+  const callers = trades.filter(t => t.uid === uid && t.direction);
   let calls = 0, hits = 0;
   for (const t of callers) {
     const result = evalCallAccuracy(t);
@@ -1411,16 +1411,17 @@ function renderFeed() {
     }
 
     let callingItHtml = "";
-    if (t.callingIt) {
+    if (t.direction || t.callingIt) {
       let dirBadge = "";
       let resultBadge = "";
-      if (t.direction === "bull") dirBadge = `<span class="feed-calling-dir bull">▲ BULL</span>`;
-      else if (t.direction === "bear") dirBadge = `<span class="feed-calling-dir bear">▼ BEAR</span>`;
+      if (t.direction === "bull") dirBadge = `<span class="feed-calling-dir bull">▲ UP</span>`;
+      else if (t.direction === "bear") dirBadge = `<span class="feed-calling-dir bear">▼ DOWN</span>`;
       const result = evalCallAccuracy(t);
       if (result === "hit") resultBadge = `<span class="feed-calling-result">✅</span>`;
       else if (result === "miss") resultBadge = `<span class="feed-calling-result">❌</span>`;
       else if (t.direction) resultBadge = `<span class="feed-calling-result" title="Pending (~5min eval)">⏳</span>`;
-      callingItHtml = `<div class="feed-calling-row">${dirBadge}<span class="feed-calling">"${escapeHtml(t.callingIt)}"</span>${resultBadge}</div>`;
+      const noteHtml = t.callingIt ? `<span class="feed-calling">"${escapeHtml(t.callingIt)}"</span>` : "";
+      callingItHtml = `<div class="feed-calling-row">${dirBadge}${noteHtml}${resultBadge}</div>`;
     }
     return `
       <li class="feed-item" data-uid="${t.uid}" title="View ${escapeHtml(t.username)}'s profile">
@@ -2582,6 +2583,8 @@ function openSheet(mode) {
   el("tradeSheet").classList.toggle("shorting", mode === "short");
   // Show/hide calling-it field (not relevant for shorts)
   el("callingItInput").closest(".calling-it-wrap").style.display = mode === "short" ? "none" : "";
+  // Reset direction toggle
+  document.querySelectorAll(".dir-btn").forEach(b => b.classList.remove("active"));
   resetSlider();
 
   // Auto-apply max if the user chose it last time for this mode
@@ -2613,6 +2616,14 @@ el("coverShortBtn").addEventListener("click", async () => {
     el("coverShortBtn").disabled = false;
     el("coverShortBtn").textContent = "Cover";
   }
+});
+
+// Direction toggle for calling-it prediction
+document.querySelectorAll(".dir-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".dir-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+  });
 });
 
 el("openBuy").addEventListener("click", () => openSheet("buy"));
@@ -2743,6 +2754,8 @@ async function confirmTrade(isQuick = false) {
   slideTrackWrap.querySelector(".slide-track").classList.add("confirmed");
 
   const callingIt = el("callingItInput").value.trim().slice(0, 60);
+  const selectedDirBtn = document.querySelector(".dir-btn.active");
+  const selectedDirection = selectedDirBtn ? selectedDirBtn.dataset.dir : "";
 
   try {
     _lastTradeWasLocal = false;
@@ -2956,7 +2969,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
         tx.set(tradeDoc, {
           uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
           type: "sell", usdAmount: usdReceived, coinAmount, price, displayPrice: priceNow, callingIt: callingIt || "",
-          direction: callingIt ? "bear" : "",
+          direction: direction || "",
           tsFallback: clickTs, timestamp: serverTimestamp()
         });
       }
@@ -2973,7 +2986,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
     if (isQuotaErr && mode === "sell") {
       _firestoreQuotaExceeded = true;
       _lastTradeWasLocal = true;
-      _executeLocalSell(usdAmount, sellAll, callingIt);
+      _executeLocalSell(usdAmount, sellAll, callingIt, direction);
       return; // local sell succeeded — don't throw
     }
 
@@ -2982,7 +2995,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
 }
 
 // Apply a sell locally using cached state when Firestore is unavailable
-function _executeLocalSell(usdAmount, sellAll, callingIt) {
+function _executeLocalSell(usdAmount, sellAll, callingIt, direction = "") {
   const price = marketState.price || STARTING_PRICE;
   const liveHoldings = currentUser.holdings || 0;
   if (liveHoldings < 1e-9) throw new Error("No $PLTY held.");
@@ -3000,7 +3013,7 @@ function _executeLocalSell(usdAmount, sellAll, callingIt) {
   // Queue this sell so it can be committed to Firestore when quota resets.
   // Store the execution price/time now — flushing later must use these, not
   // whatever the market price happens to be when the queue drains.
-  _pendingSellQueue.push({ usdAmount: usdReceived, coinAmount, price, sellAll: false, callingIt, ts: Date.now() });
+  _pendingSellQueue.push({ usdAmount: usdReceived, coinAmount, price, sellAll: false, callingIt, direction: direction || "", ts: Date.now() });
   _savePendingSells();
 
   // Re-render wallet and show a warning
