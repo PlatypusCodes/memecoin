@@ -426,6 +426,22 @@ a{ color:inherit; }
 .lb-value.up{ color:var(--toxic); }
 .lb-value.down{ color:var(--venom); }
 .lb-title-label{ font-size:11px; color:var(--text-faint); font-weight:600; letter-spacing:.04em; text-transform:uppercase; }
+.lb-sub-tabs{ display:flex; gap:4px; width:100%; }
+.lb-sub-tab{
+  flex:1; background:var(--surface-2); border:1px solid var(--border); color:var(--text-faint);
+  border-radius:var(--radius-m); padding:5px 6px; font-size:10.5px; font-weight:600;
+  cursor:pointer; transition:all .15s; white-space:nowrap;
+}
+.lb-sub-tab.active{ background:var(--surface-3); color:var(--text); border-color:var(--border); }
+.lb-accuracy-score{ font-size:11px; font-weight:700; font-variant-numeric:tabular-nums; }
+.lb-accuracy-score.high{ color:var(--toxic); }
+.lb-accuracy-score.mid{ color:var(--bill); }
+.lb-accuracy-score.low{ color:var(--venom); }
+.feed-calling-row{ display:flex; align-items:center; gap:5px; margin-top:2px; }
+.feed-calling-dir{ font-size:10px; font-weight:700; border-radius:3px; padding:1px 4px; flex-shrink:0; }
+.feed-calling-dir.bull{ color:var(--toxic); background:var(--toxic-dim); }
+.feed-calling-dir.bear{ color:var(--venom); background:var(--venom-dim); }
+.feed-calling-result{ font-size:10px; margin-left:auto; flex-shrink:0; }
 .lb-item-rich{ align-items:flex-start; }
 .lb-item-rich img{ margin-top:2px; }
 .lb-detail-rows{ display:flex; flex-direction:column; gap:2px; margin-top:3px; }

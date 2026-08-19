@@ -201,7 +201,11 @@
       <!-- LEADERBOARD PANEL -->
       <div class="panel hidden" id="panelLeaderboard">
         <div class="lb-header">
-          <span class="lb-title-label">Top Traders by Portfolio Value</span>
+          <div class="lb-sub-tabs">
+            <button class="lb-sub-tab active" data-lb="portfolio">Portfolio</button>
+            <button class="lb-sub-tab" data-lb="shorts">📉 Shorts</button>
+            <button class="lb-sub-tab" data-lb="accuracy">🎯 Accuracy</button>
+          </div>
         </div>
         <ul class="lb-list" id="lbList"></ul>
       </div>
@@ -518,6 +522,9 @@
       <div class="modal-stat modal-stat-full">
         <span class="modal-stat-label">Realized P&amp;L</span>
         <span class="modal-stat-val" id="modalRealizedPnl">—</span>
+      </div>
+      <div class="modal-stat modal-stat-full" id="modalAccuracy" style="display:none">
+        <!-- filled by JS -->
       </div>
     </div>
     <div class="modal-badges" id="modalBadges"></div>

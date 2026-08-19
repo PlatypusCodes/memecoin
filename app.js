@@ -1333,6 +1333,60 @@ setInterval(() => {
   });
 }, 1000);
 
+// Re-render feed every 60s so ⏳ accuracy results resolve to ✅/❌ as ticks arrive
+setInterval(() => {
+  if (!booted || !trades.length) return;
+  if (document.getElementById("panelFeed") && !document.getElementById("panelFeed").classList.contains("hidden")) {
+    renderFeed();
+  }
+}, 60000);
+
+// ===========================================================
+// ACCURACY SCORE HELPERS
+// ===========================================================
+// How many ticks (3s each) to wait before evaluating a call
+const ACCURACY_EVAL_TICKS = 100; // ~5 minutes
+
+// Look up the price N ticks after a given timestamp from the local ticks[] array.
+// Returns null if we don't have that data yet.
+function priceNTicksAfter(tradeTs, nTicks) {
+  const targetTs = tradeTs + nTicks * TICK_MS;
+  if (targetTs > Date.now()) return null; // not resolved yet
+  // ticks[] entries use ts = tickIndex * TICK_MS (absolute ms)
+  // find the closest tick at or after targetTs
+  let best = null;
+  let bestDelta = Infinity;
+  for (const tick of ticks) {
+    const delta = Math.abs(tick.ts - targetTs);
+    if (delta < bestDelta) { bestDelta = delta; best = tick; }
+  }
+  return best ? best.price : null;
+}
+
+// Compute accuracy result for a single trade: "hit", "miss", or null (pending/no call)
+function evalCallAccuracy(trade) {
+  if (!trade.callingIt || !trade.direction) return null;
+  const entryPrice = trade.displayPrice || trade.price;
+  if (!entryPrice) return null;
+  const laterPrice = priceNTicksAfter(trade.ts, ACCURACY_EVAL_TICKS);
+  if (laterPrice === null) return null; // still pending
+  const wentUp = laterPrice > entryPrice;
+  if (trade.direction === "bull") return wentUp ? "hit" : "miss";
+  if (trade.direction === "bear") return !wentUp ? "hit" : "miss";
+  return null;
+}
+
+// Compute accuracy stats for a uid from the trades array
+function computeAccuracyStats(uid) {
+  const callers = trades.filter(t => t.uid === uid && t.callingIt && t.direction);
+  let calls = 0, hits = 0;
+  for (const t of callers) {
+    const result = evalCallAccuracy(t);
+    if (result !== null) { calls++; if (result === "hit") hits++; }
+  }
+  return { calls, hits, pct: calls > 0 ? (hits / calls) * 100 : null };
+}
+
 function renderFeed() {
   const list = el("feedList");
   if (!trades.length) {
@@ -1342,14 +1396,25 @@ function renderFeed() {
   list.innerHTML = trades.slice(0, 40).map(t => {
     const verbClass = t.type === "buy" ? "verb-buy" : "verb-sell";
     const verb = t.type === "buy" ? "bought" : "sold";
-    const callingIt = t.callingIt ? `<div class="feed-calling">"${escapeHtml(t.callingIt)}"</div>` : "";
+    let callingItHtml = "";
+    if (t.callingIt) {
+      let dirBadge = "";
+      let resultBadge = "";
+      if (t.direction === "bull") dirBadge = `<span class="feed-calling-dir bull">▲ BULL</span>`;
+      else if (t.direction === "bear") dirBadge = `<span class="feed-calling-dir bear">▼ BEAR</span>`;
+      const result = evalCallAccuracy(t);
+      if (result === "hit") resultBadge = `<span class="feed-calling-result">✅</span>`;
+      else if (result === "miss") resultBadge = `<span class="feed-calling-result">❌</span>`;
+      else if (t.direction) resultBadge = `<span class="feed-calling-result" title="Pending (~5min eval)">⏳</span>`;
+      callingItHtml = `<div class="feed-calling-row">${dirBadge}<span class="feed-calling">"${escapeHtml(t.callingIt)}"</span>${resultBadge}</div>`;
+    }
     return `
       <li class="feed-item" data-uid="${t.uid}" title="View ${escapeHtml(t.username)}'s profile">
         <img src="${t.avatarUrl || DEFAULT_AVATAR}" onerror="this.src='${DEFAULT_AVATAR}'" alt="" />
         <div class="feed-main">
           <span class="feed-line1"><strong>${escapeHtml(t.username)}</strong> <span class="${verbClass}">${verb}</span> ${fmtUsd(t.usdAmount)}</span>
           <span class="feed-line2">${fmtPrice(t.price)} · <span class="feed-ts" data-ts="${t.ts}">${timeAgo(t.ts)}</span></span>
-          ${callingIt}
+          ${callingItHtml}
         </div>
         <span class="feed-badge ${t.type}">${t.type === "buy" ? "▲ BUY" : "▼ SELL"}</span>
       </li>`;
@@ -1366,6 +1431,17 @@ function renderFeed() {
 // ===========================================================
 let _lbUserCache = [];
 let _lbFetchTs = 0;
+let _lbMode = "portfolio"; // "portfolio" | "shorts" | "accuracy"
+
+// Sub-tab click handling
+document.querySelectorAll(".lb-sub-tab").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".lb-sub-tab").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    _lbMode = btn.dataset.lb;
+    renderLeaderboard();
+  });
+});
 
 async function renderLeaderboard() {
   const list = el("lbList");
@@ -1387,38 +1463,127 @@ async function renderLeaderboard() {
   }
 
   const price = marketState.price || STARTING_PRICE;
-
-  const ranked = _lbUserCache
-    .map(u => {
-      const cash = u.balance || 0;
-      const held = u.holdings || 0;
-      const pltyValue = held * price;
-      const overall = cash + pltyValue;
-      const tradeRec = traderMap.get(u.uid) || {};
-      return { uid: u.uid, username: u.username || "anon", avatarUrl: u.avatarUrl, cash, held, pltyValue, overall, tradeRec };
-    })
-    .sort((a, b) => b.overall - a.overall)
-    .slice(0, 50);
-
   const rankClasses = ["gold", "silver", "bronze"];
-  list.innerHTML = ranked.map((r, i) => {
-    const rankClass = i < 3 ? rankClasses[i] : "";
-    const rankLabel = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`;
-    return `
-      <li class="lb-item lb-item-rich" data-uid="${r.uid}">
-        <span class="lb-rank ${rankClass}">${rankLabel}</span>
-        <img src="${r.avatarUrl || DEFAULT_AVATAR}" onerror="this.src='${DEFAULT_AVATAR}'" alt="" />
-        <div class="lb-main">
-          <span class="lb-name">${escapeHtml(r.username)}</span>
-          <div class="lb-detail-rows">
-            <div class="lb-detail-row"><span class="lb-detail-label">Cash</span><span class="lb-detail-val">${fmtUsd(r.cash)}</span></div>
-            <div class="lb-detail-row"><span class="lb-detail-label">$PLTY Held</span><span class="lb-detail-val">${r.held.toFixed(8)}</span></div>
-            <div class="lb-detail-row"><span class="lb-detail-label">$PLTY Value</span><span class="lb-detail-val">${fmtUsd(r.pltyValue)}</span></div>
-            <div class="lb-detail-row lb-overall"><span class="lb-detail-label">Overall</span><span class="lb-detail-val">${fmtUsd(r.overall)}</span></div>
+
+  // ── PORTFOLIO tab ───────────────────────────────────────
+  if (_lbMode === "portfolio") {
+    const ranked = _lbUserCache
+      .map(u => {
+        const cash = u.balance || 0;
+        const held = u.holdings || 0;
+        const pltyValue = held * price;
+        const overall = cash + pltyValue;
+        return { uid: u.uid, username: u.username || "anon", avatarUrl: u.avatarUrl, cash, held, pltyValue, overall };
+      })
+      .sort((a, b) => b.overall - a.overall)
+      .slice(0, 50);
+
+    list.innerHTML = ranked.map((r, i) => {
+      const rankClass = i < 3 ? rankClasses[i] : "";
+      const rankLabel = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`;
+      return `
+        <li class="lb-item lb-item-rich" data-uid="${r.uid}">
+          <span class="lb-rank ${rankClass}">${rankLabel}</span>
+          <img src="${r.avatarUrl || DEFAULT_AVATAR}" onerror="this.src='${DEFAULT_AVATAR}'" alt="" />
+          <div class="lb-main">
+            <span class="lb-name">${escapeHtml(r.username)}</span>
+            <div class="lb-detail-rows">
+              <div class="lb-detail-row"><span class="lb-detail-label">Cash</span><span class="lb-detail-val">${fmtUsd(r.cash)}</span></div>
+              <div class="lb-detail-row"><span class="lb-detail-label">$PLTY Held</span><span class="lb-detail-val">${r.held.toFixed(8)}</span></div>
+              <div class="lb-detail-row"><span class="lb-detail-label">$PLTY Value</span><span class="lb-detail-val">${fmtUsd(r.pltyValue)}</span></div>
+              <div class="lb-detail-row lb-overall"><span class="lb-detail-label">Overall</span><span class="lb-detail-val">${fmtUsd(r.overall)}</span></div>
+            </div>
           </div>
-        </div>
-      </li>`;
-  }).join("");
+        </li>`;
+    }).join("");
+
+  // ── SHORTS tab ──────────────────────────────────────────
+  } else if (_lbMode === "shorts") {
+    const ranked = _lbUserCache
+      .filter(u => (u.shortRealizedPnl || 0) !== 0 || (u.shortPosition && u.shortPosition.size > 0))
+      .map(u => {
+        const realized = u.shortRealizedPnl || 0;
+        // Include unrealized P&L from open position
+        let unrealized = 0;
+        if (u.shortPosition && u.shortPosition.size > 0) {
+          const entryPrice = u.shortPosition.entryPrice || price;
+          const priceDrop = (entryPrice - price) / entryPrice;
+          unrealized = u.shortPosition.size * priceDrop;
+        }
+        const total = realized + unrealized;
+        return { uid: u.uid, username: u.username || "anon", avatarUrl: u.avatarUrl, realized, unrealized, total };
+      })
+      .filter(r => r.total !== 0)
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 50);
+
+    if (!ranked.length) {
+      list.innerHTML = `<li class="feed-empty">No shorts closed yet. Be the bear. 📉</li>`;
+    } else {
+      list.innerHTML = ranked.map((r, i) => {
+        const rankClass = i < 3 ? rankClasses[i] : "";
+        const rankLabel = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`;
+        const totalSign = r.total >= 0 ? "+" : "";
+        const totalClass = r.total >= 0 ? "up" : "down";
+        const realSign = r.realized >= 0 ? "+" : "";
+        const unrSign = r.unrealized >= 0 ? "+" : "";
+        return `
+          <li class="lb-item lb-item-rich" data-uid="${r.uid}">
+            <span class="lb-rank ${rankClass}">${rankLabel}</span>
+            <img src="${r.avatarUrl || DEFAULT_AVATAR}" onerror="this.src='${DEFAULT_AVATAR}'" alt="" />
+            <div class="lb-main">
+              <span class="lb-name">${escapeHtml(r.username)}</span>
+              <div class="lb-detail-rows">
+                <div class="lb-detail-row"><span class="lb-detail-label">Realized</span><span class="lb-detail-val">${realSign}${fmtUsd(r.realized)}</span></div>
+                ${r.unrealized !== 0 ? `<div class="lb-detail-row"><span class="lb-detail-label">Open P&L</span><span class="lb-detail-val">${unrSign}${fmtUsd(r.unrealized)}</span></div>` : ""}
+                <div class="lb-detail-row lb-overall"><span class="lb-detail-label">Total Short P&L</span><span class="lb-detail-val ${totalClass}">${totalSign}${fmtUsd(r.total)}</span></div>
+              </div>
+            </div>
+          </li>`;
+      }).join("");
+    }
+
+  // ── ACCURACY tab ────────────────────────────────────────
+  } else if (_lbMode === "accuracy") {
+    // Compute accuracy per uid from live trades[]
+    const statsMap = new Map();
+    for (const uid of new Set(trades.map(t => t.uid))) {
+      const stats = computeAccuracyStats(uid);
+      if (stats.calls >= 3) statsMap.set(uid, stats); // min 3 resolved calls to qualify
+    }
+
+    const ranked = _lbUserCache
+      .filter(u => statsMap.has(u.uid))
+      .map(u => {
+        const stats = statsMap.get(u.uid);
+        return { uid: u.uid, username: u.username || "anon", avatarUrl: u.avatarUrl, ...stats };
+      })
+      .sort((a, b) => b.pct - a.pct || b.calls - a.calls)
+      .slice(0, 50);
+
+    if (!ranked.length) {
+      list.innerHTML = `<li class="feed-empty">Need 3+ resolved calls to rank. Make a "calling it" prediction on your next trade! 🎯</li>`;
+    } else {
+      list.innerHTML = ranked.map((r, i) => {
+        const rankClass = i < 3 ? rankClasses[i] : "";
+        const rankLabel = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`;
+        const pctNum = r.pct || 0;
+        const scoreClass = pctNum >= 65 ? "high" : pctNum >= 45 ? "mid" : "low";
+        return `
+          <li class="lb-item lb-item-rich" data-uid="${r.uid}">
+            <span class="lb-rank ${rankClass}">${rankLabel}</span>
+            <img src="${r.avatarUrl || DEFAULT_AVATAR}" onerror="this.src='${DEFAULT_AVATAR}'" alt="" />
+            <div class="lb-main">
+              <span class="lb-name">${escapeHtml(r.username)}</span>
+              <div class="lb-detail-rows">
+                <div class="lb-detail-row"><span class="lb-detail-label">Correct Calls</span><span class="lb-detail-val">${r.hits} / ${r.calls}</span></div>
+                <div class="lb-detail-row lb-overall"><span class="lb-detail-label">Accuracy</span><span class="lb-accuracy-score ${scoreClass}">${pctNum.toFixed(0)}%</span></div>
+              </div>
+            </div>
+          </li>`;
+      }).join("");
+    }
+  }
 
   list.querySelectorAll(".lb-item[data-uid]").forEach(item => {
     item.addEventListener("click", () => openTraderProfile(item.dataset.uid));
@@ -1477,19 +1642,40 @@ async function openTraderProfile(uid) {
   if ((rec.realizedPnl || 0) >= 10000)  badges.push({ icon: "🤑", label: "Profit Machine" });
   if ((rec.realizedPnl || 0) < -5000)   badges.push({ icon: "🩸", label: "Rekt" });
   if (rec.buys === 1 && totalTrades === 1) badges.push({ icon: "🐢", label: "Lurker" });
+  // Accuracy badges
+  const accStats = computeAccuracyStats(uid);
+  if (accStats.calls >= 3 && accStats.pct >= 80) badges.push({ icon: "🎯", label: "Oracle" });
+  else if (accStats.calls >= 3 && accStats.pct >= 60) badges.push({ icon: "📡", label: "Market Reader" });
+  else if (accStats.calls >= 5 && accStats.pct < 30) badges.push({ icon: "🙈", label: "Perma-Wrong" });
   el("modalBadges").innerHTML = badges.map(b =>
     `<span class="badge"><span class="badge-icon">${b.icon}</span>${b.label}</span>`
   ).join("") || `<span style="color:var(--text-faint);font-size:11px">No badges yet</span>`;
 
+  // Accuracy stat line
+  const accEl = el("modalAccuracy");
+  if (accEl) {
+    if (accStats.calls >= 1) {
+      const pctNum = accStats.pct || 0;
+      const cls = pctNum >= 65 ? "up" : pctNum >= 45 ? "" : "down";
+      accEl.innerHTML = `<span class="modal-stat-label">🎯 Call Accuracy</span><span class="modal-stat-val ${cls}">${pctNum.toFixed(0)}% <span style="font-weight:400;font-size:10px;color:var(--text-faint)">(${accStats.hits}/${accStats.calls})</span></span>`;
+      accEl.style.display = "";
+    } else {
+      accEl.style.display = "none";
+    }
+  }
+
   // Recent trades for this user
   const userTrades = trades.filter(t => t.uid === uid).slice(0, 10);
   el("modalTradesList").innerHTML = userTrades.length
-    ? userTrades.map(t => `
+    ? userTrades.map(t => {
+        const callingItHtml = t.callingIt ? `<span style="color:var(--text-faint);font-size:10px;font-style:italic;margin-left:4px">"${escapeHtml(t.callingIt)}" ${evalCallAccuracy(t) === "hit" ? "✅" : evalCallAccuracy(t) === "miss" ? "❌" : t.direction ? "⏳" : ""}</span>` : "";
+        return `
         <li class="modal-trade-item">
           <span class="modal-trade-badge ${t.type}">${t.type === "buy" ? "▲ BUY" : "▼ SELL"}</span>
-          <span class="modal-trade-amount">${fmtUsd(t.usdAmount)}</span>
+          <span class="modal-trade-amount">${fmtUsd(t.usdAmount)}${callingItHtml}</span>
           <span class="modal-trade-time">${fmtPrice(t.price)} · ${timeAgo(t.ts)}</span>
-        </li>`).join("")
+        </li>`;
+      }).join("")
     : `<li style="color:var(--text-faint);font-size:12px;padding:12px 0">No recent trades in window</li>`;
 
   el("profileModal").classList.remove("hidden");
@@ -2681,6 +2867,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
         tx.set(tradeDoc, {
           uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
           type: "buy", usdAmount, coinAmount, price, displayPrice: livePrice, callingIt: callingIt || "",
+          direction: callingIt ? "bull" : "",
           tsFallback: clickTs, timestamp: serverTimestamp()
         });
       } else {
@@ -2711,6 +2898,7 @@ async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", si
         tx.set(tradeDoc, {
           uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
           type: "sell", usdAmount: usdReceived, coinAmount, price, displayPrice: priceNow, callingIt: callingIt || "",
+          direction: callingIt ? "bear" : "",
           tsFallback: clickTs, timestamp: serverTimestamp()
         });
       }
