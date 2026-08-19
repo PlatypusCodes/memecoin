@@ -2583,8 +2583,10 @@ function openSheet(mode) {
   el("tradeSheet").classList.toggle("shorting", mode === "short");
   // Show/hide calling-it field (not relevant for shorts)
   el("callingItInput").closest(".calling-it-wrap").style.display = mode === "short" ? "none" : "";
-  // Reset direction toggle
+  // Reset direction toggle — default bull for buys, bear for sells
   document.querySelectorAll(".dir-btn").forEach(b => b.classList.remove("active"));
+  if (mode === "buy") document.getElementById("dirBull").classList.add("active");
+  else if (mode === "sell") document.getElementById("dirBear").classList.add("active");
   resetSlider();
 
   // Auto-apply max if the user chose it last time for this mode
