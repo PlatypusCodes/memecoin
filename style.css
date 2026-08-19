@@ -1619,3 +1619,65 @@ button:focus-visible, input:focus-visible{ outline:2px solid var(--toxic); outli
 .feed-badge.short_close { color: #c4b5fd; background: rgba(167,139,250,0.12); }
 .feed-line1 .verb-short_open { color: #a78bfa; }
 .feed-line1 .verb-short_close { color: #c4b5fd; }
+
+/* =====================================================
+   FOLLOW / COPY TRADING
+   ===================================================== */
+
+/* Follow button in profile modal */
+.follow-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 7px 16px;
+  border-radius: 999px;
+  border: 1.5px solid var(--text-faint);
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: border-color 0.18s, color 0.18s, background 0.18s;
+}
+.follow-btn:hover {
+  border-color: var(--toxic);
+  color: var(--toxic);
+  background: var(--toxic-dim);
+}
+.follow-btn.following {
+  border-color: var(--toxic);
+  color: var(--toxic);
+  background: var(--toxic-dim);
+}
+.follow-btn.following:hover {
+  border-color: var(--venom);
+  color: var(--venom);
+  background: var(--venom-dim);
+}
+.follow-btn.hidden { display: none; }
+
+/* Mirror trade button in feed */
+.mirror-btn {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1.5px solid rgba(167, 139, 250, 0.5);
+  background: rgba(139, 92, 246, 0.10);
+  color: #c4b5fd;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+  white-space: nowrap;
+}
+.mirror-btn:hover {
+  border-color: #a78bfa;
+  background: rgba(139, 92, 246, 0.22);
+  transform: scale(1.04);
+}
+.mirror-btn:active {
+  transform: scale(0.97);
+}

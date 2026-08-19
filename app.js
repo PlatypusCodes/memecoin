@@ -4292,3 +4292,138 @@ el("adminDump").addEventListener("click", () => {
     }
   });
 })();
+
+// ===========================================================
+// FOLLOW / COPY TRADING
+// ===========================================================
+
+// Persisted set of followed trader UIDs
+let followedTraders = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem("plty_followed") || "[]");
+    return new Set(Array.isArray(saved) ? saved : []);
+  } catch (_) { return new Set(); }
+})();
+
+function saveFollowedTraders() {
+  try {
+    localStorage.setItem("plty_followed", JSON.stringify([...followedTraders]));
+  } catch (_) {}
+}
+
+function isFollowing(uid) {
+  return followedTraders.has(uid);
+}
+
+function toggleFollow(uid) {
+  if (!uid || uid === currentUser?.uid) return;
+  if (followedTraders.has(uid)) {
+    followedTraders.delete(uid);
+  } else {
+    followedTraders.add(uid);
+  }
+  saveFollowedTraders();
+}
+
+// Update the Follow button in the profile modal for the currently viewed uid
+let _modalCurrentUid = null;
+
+function renderFollowBtn(uid) {
+  const btn = el("modalFollowBtn");
+  if (!btn) return;
+  if (!uid || uid === currentUser?.uid) {
+    btn.classList.add("hidden");
+    return;
+  }
+  btn.classList.remove("hidden");
+  const following = isFollowing(uid);
+  btn.textContent = following ? "✓ Following" : "Follow";
+  btn.classList.toggle("following", following);
+}
+
+el("modalFollowBtn").addEventListener("click", () => {
+  if (!_modalCurrentUid) return;
+  toggleFollow(_modalCurrentUid);
+  const following = isFollowing(_modalCurrentUid);
+  const rec = traderMap.get(_modalCurrentUid);
+  const name = rec?.username || "trader";
+  toast(following ? `👀 Following ${name}` : `Unfollowed ${name}`, false);
+  renderFollowBtn(_modalCurrentUid);
+  // Re-render feed so mirror buttons appear/disappear immediately
+  renderFeed();
+});
+
+// Patch openTraderProfile to track the modal uid and render follow state
+const _origOpenTraderProfile = openTraderProfile;
+openTraderProfile = async function(uid) {
+  _modalCurrentUid = uid;
+  await _origOpenTraderProfile(uid);
+  renderFollowBtn(uid);
+};
+
+// Open the trade sheet pre-filled to mirror a trade from the feed
+function mirrorTrade(trade) {
+  if (!currentUser) { toast("Log in to copy trades", true); return; }
+  if (!trade) return;
+
+  const mode = trade.type === "buy" ? "buy" : trade.type === "sell" ? "sell" : null;
+  if (!mode) { toast("Can't mirror this trade type", true); return; }
+
+  // Use the same USD amount, capped to what the user can actually afford
+  let amt = trade.usdAmount || 0;
+  if (mode === "buy") {
+    amt = Math.min(amt, currentUser.balance || 0);
+  } else {
+    const holdingsVal = (currentUser.holdings || 0) * (marketState.price || STARTING_PRICE);
+    amt = Math.min(amt, holdingsVal);
+  }
+  amt = Math.floor(amt * 100) / 100;
+
+  openSheet(mode);
+  sheetAmount = amt > 0 ? String(amt) : "";
+  renderSheetAmount();
+  renderSheetConvert();
+
+  const rec = traderMap.get(trade.uid);
+  toast(`📋 Mirroring ${rec?.username || "trader"}'s ${mode} — adjust amount & slide to confirm`, false);
+}
+
+// Patch renderFeed to inject Mirror buttons on followed traders' trades
+const _origRenderFeed = renderFeed;
+renderFeed = function() {
+  _origRenderFeed();
+
+  if (!followedTraders.size) return;
+
+  const list = el("feedList");
+  const items = list.querySelectorAll(".feed-item[data-uid]");
+  items.forEach(item => {
+    const uid = item.dataset.uid;
+    if (!followedTraders.has(uid) || uid === currentUser?.uid) return;
+
+    // Find the matching trade
+    // Feed items are rendered in the same order as trades.slice(0,40)
+    // We identify the trade by uid + position in the list
+    const uidItems = [...list.querySelectorAll(`.feed-item[data-uid="${uid}"]`)];
+    const itemIdx = uidItems.indexOf(item);
+    const userTrades = trades.filter(t => t.uid === uid && (t.type === "buy" || t.type === "sell"));
+    const trade = userTrades[itemIdx];
+    if (!trade) return;
+
+    // Don't add twice (safety for rapid re-renders)
+    if (item.querySelector(".mirror-btn")) return;
+
+    const btn = document.createElement("button");
+    btn.className = "mirror-btn";
+    btn.innerHTML = `📋 Mirror ${trade.type === "buy" ? "Buy" : "Sell"}`;
+    btn.title = `Copy ${traderMap.get(uid)?.username || "this"}'s ${trade.type} of ${fmtUsd(trade.usdAmount)}`;
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation(); // don't open profile modal
+      mirrorTrade(trade);
+    });
+
+    // Inject after feed-main, before the badge
+    const feedMain = item.querySelector(".feed-main");
+    if (feedMain) feedMain.after(btn);
+  });
+};
