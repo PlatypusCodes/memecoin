@@ -1090,8 +1090,10 @@ function buildTraderMap() {
       });
     }
     const rec = traderMap.get(t.uid);
-    if (t.type === "buy") rec.buys++; else rec.sells++;
-    rec.volume += t.usdAmount || 0;
+    if (t.type === "buy") rec.buys++;
+    else if (t.type === "sell") rec.sells++;
+    // short_open / short_close don't count as regular buys/sells for volume purposes
+    if (t.type === "buy" || t.type === "sell") rec.volume += t.usdAmount || 0;
     if (t.ts > rec.lastTs) rec.lastTs = t.ts;
   }
   // Merge realizedPnl from currentUser into their own traderMap entry
@@ -1394,8 +1396,20 @@ function renderFeed() {
     return;
   }
   list.innerHTML = trades.slice(0, 40).map(t => {
-    const verbClass = t.type === "buy" ? "verb-buy" : "verb-sell";
-    const verb = t.type === "buy" ? "bought" : "sold";
+    let verbClass, verb, badgeLabel;
+    if (t.type === "buy")         { verbClass = "verb-buy";         verb = "bought";       badgeLabel = "▲ BUY"; }
+    else if (t.type === "sell")   { verbClass = "verb-sell";        verb = "sold";         badgeLabel = "▼ SELL"; }
+    else if (t.type === "short_open")  { verbClass = "verb-short_open";  verb = "shorted";      badgeLabel = "◆ SHORT"; }
+    else if (t.type === "short_close") { verbClass = "verb-short_close"; verb = "covered short"; badgeLabel = "◇ COVER"; }
+    else                          { verbClass = "verb-sell";        verb = t.type;         badgeLabel = t.type; }
+
+    let line2Extra = "";
+    if (t.type === "short_close" && t.shortPnl != null) {
+      const sign = t.shortPnl >= 0 ? "+" : "";
+      const pnlColor = t.shortPnl >= 0 ? "var(--toxic)" : "var(--venom)";
+      line2Extra = ` · <span style="color:${pnlColor};font-weight:700">${sign}${fmtUsd(t.shortPnl)}</span>`;
+    }
+
     let callingItHtml = "";
     if (t.callingIt) {
       let dirBadge = "";
@@ -1413,10 +1427,10 @@ function renderFeed() {
         <img src="${t.avatarUrl || DEFAULT_AVATAR}" onerror="this.src='${DEFAULT_AVATAR}'" alt="" />
         <div class="feed-main">
           <span class="feed-line1"><strong>${escapeHtml(t.username)}</strong> <span class="${verbClass}">${verb}</span> ${fmtUsd(t.usdAmount)}</span>
-          <span class="feed-line2">${fmtPrice(t.price)} · <span class="feed-ts" data-ts="${t.ts}">${timeAgo(t.ts)}</span></span>
+          <span class="feed-line2">${fmtPrice(t.price)} · <span class="feed-ts" data-ts="${t.ts}">${timeAgo(t.ts)}</span>${line2Extra}</span>
           ${callingItHtml}
         </div>
-        <span class="feed-badge ${t.type}">${t.type === "buy" ? "▲ BUY" : "▼ SELL"}</span>
+        <span class="feed-badge ${t.type}">${badgeLabel}</span>
       </li>`;
   }).join("");
 
@@ -2208,8 +2222,8 @@ function drawTradeMarkers() {
         : candle.close;
     const priceY = yFor(anchorPrice);
 
-    // Place avatars above candle for buys, below for sells, stacked if multiple
-    const isBuy = t.type === "buy";
+    // Classify side: buys & short_opens go above; sells & short_closes go below
+    const isBuy = t.type === "buy" || t.type === "short_open";
     const side = isBuy ? "buy" : "sell";
     const slotMap = slotCount[side];
     const slot = slotMap.get(idx) || 0;
@@ -2219,11 +2233,9 @@ function drawTradeMarkers() {
     const STEM = 8; // gap between candle wick and avatar
     let cy;
     if (isBuy) {
-      // Above the candle high
       const candleTopY = yFor(candle.high);
       cy = candleTopY - STEM - AVATAR_R - slot * (AVATAR_R * 2 + 4);
     } else {
-      // Below the candle low
       const candleBottomY = yFor(candle.low);
       cy = candleBottomY + STEM + AVATAR_R + slot * (AVATAR_R * 2 + 4);
     }
@@ -2239,11 +2251,12 @@ function drawTradeMarkers() {
 
   for (const m of clustered) {
     const { _x: x, _y: y, _priceY: priceY, _isBuy: isBuy } = m;
-    const color = isBuy ? (cssVar("--toxic") || "#7cff6b") : (cssVar("--venom") || "#ff3d6e");
-    const rgb   = isBuy ? "124,255,107" : "255,61,110";
+    const isShort = m.type === "short_open" || m.type === "short_close";
+    const color = isShort ? "#a78bfa" : (isBuy ? (cssVar("--toxic") || "#7cff6b") : (cssVar("--venom") || "#ff3d6e"));
+    const rgb   = isShort ? "167,139,250" : (isBuy ? "124,255,107" : "255,61,110");
     ctx.save();
 
-    // Draw stem line from avatar to price point
+    // Draw stem line from marker to price point
     ctx.save();
     ctx.beginPath();
     ctx.moveTo(x, y + (isBuy ? 9 : -9));
@@ -2255,27 +2268,55 @@ function drawTradeMarkers() {
     ctx.setLineDash([]);
     ctx.restore();
 
-    // Draw avatar circle
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(x, y, 9, 0, Math.PI * 2);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    ctx.fillStyle = "rgba(11,14,12,0.9)";
-    ctx.fill();
-    ctx.shadowColor = `rgba(${rgb},0.6)`;
-    ctx.shadowBlur = 6;
-    ctx.stroke();
-    ctx.restore();
-
-    const img = getAvatarImg(m.avatarUrl);
-    if (img.complete && img.naturalWidth) {
+    if (isShort) {
+      // Draw diamond marker for shorts
+      const R = 9;
       ctx.save();
       ctx.beginPath();
-      ctx.arc(x, y, 7, 0, Math.PI * 2);
-      ctx.clip();
-      ctx.drawImage(img, x - 7, y - 7, 14, 14);
+      ctx.moveTo(x, y - R);       // top
+      ctx.lineTo(x + R, y);       // right
+      ctx.lineTo(x, y + R);       // bottom
+      ctx.lineTo(x - R, y);       // left
+      ctx.closePath();
+      ctx.fillStyle = "rgba(11,14,12,0.9)";
+      ctx.shadowColor = `rgba(${rgb},0.6)`;
+      ctx.shadowBlur = 6;
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.stroke();
       ctx.restore();
+      // Diamond label: ◆ or ◇
+      ctx.save();
+      ctx.font = "bold 8px JetBrains Mono, monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = color;
+      ctx.fillText(m.type === "short_open" ? "▼" : "✕", x, y);
+      ctx.restore();
+    } else {
+      // Draw avatar circle (existing logic)
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x, y, 9, 0, Math.PI * 2);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.fillStyle = "rgba(11,14,12,0.9)";
+      ctx.fill();
+      ctx.shadowColor = `rgba(${rgb},0.6)`;
+      ctx.shadowBlur = 6;
+      ctx.stroke();
+      ctx.restore();
+
+      const img = getAvatarImg(m.avatarUrl);
+      if (img.complete && img.naturalWidth) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x, y, 7, 0, Math.PI * 2);
+        ctx.clip();
+        ctx.drawImage(img, x - 7, y - 7, 14, 14);
+        ctx.restore();
+      }
     }
 
     // Draw count badge if clustered
@@ -2307,6 +2348,7 @@ function drawWhaleAnnotations(candles, xFor, yFor, bucketMs, firstTs, lastTs) {
   if (!ctx || !candles.length) return;
   const whaleTrades = trades.filter(t =>
     t.ts >= firstTs && t.ts < lastTs && (t.usdAmount || 0) >= WHALE_THRESHOLD &&
+    (t.type === "buy" || t.type === "sell") &&
     (t.type === "buy" ? showWhaleBuys : true)
   );
   if (!whaleTrades.length) return;
@@ -2762,6 +2804,12 @@ async function executeOpenShort(usdAmount) {
       balance: bal - usdAmount, // lock collateral + fee
       shortPosition: { size: collateral, notional: usdAmount, entryPrice, openedAt: Date.now() }
     });
+    const tradeDoc = doc(tradesCol);
+    tx.set(tradeDoc, {
+      uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
+      type: "short_open", usdAmount, price: entryPrice, displayPrice: entryPrice,
+      callingIt: "", tsFallback: Date.now(), timestamp: serverTimestamp()
+    });
   });
   // Optimistic local update
   currentUser.balance = (currentUser.balance || 0) - usdAmount;
@@ -2794,6 +2842,12 @@ async function executeCoverShort() {
       shortPosition: null,
       shortRealizedPnl: shortPnl,
       realizedPnl: (u.realizedPnl || 0) + pnl,
+    });
+    const tradeDoc = doc(tradesCol);
+    tx.set(tradeDoc, {
+      uid: currentUser.uid, username: currentUser.username, avatarUrl: currentUser.avatarUrl || DEFAULT_AVATAR,
+      type: "short_close", usdAmount: payout, price: currentPrice, displayPrice: currentPrice,
+      shortPnl: pnl, callingIt: "", tsFallback: Date.now(), timestamp: serverTimestamp()
     });
   });
   // Optimistic local update
@@ -4174,3 +4228,66 @@ el("adminDump").addEventListener("click", () => {
     }
   }, 1000);
 });
+
+// ===========================================================
+// TUTORIAL MODAL
+// ===========================================================
+(function initTutorial() {
+  const TUT_PAGES = ["basics", "trading", "shorts", "social", "tips"];
+  let tutIdx = 0;
+
+  function openTutorial() {
+    el("tutorialOverlay").classList.remove("hidden");
+    renderTutPage(tutIdx);
+  }
+
+  function closeTutorial() {
+    el("tutorialOverlay").classList.add("hidden");
+  }
+
+  function renderTutPage(idx) {
+    tutIdx = idx;
+    // Show/hide pages
+    document.querySelectorAll(".tutorial-page").forEach((p, i) => {
+      p.classList.toggle("active", i === idx);
+      p.classList.toggle("hidden", i !== idx);
+    });
+    // Update tabs
+    document.querySelectorAll(".tutorial-tab").forEach((t, i) => {
+      t.classList.toggle("active", i === idx);
+    });
+    // Dots
+    const dotsEl = el("tutorialDots");
+    dotsEl.innerHTML = TUT_PAGES.map((_, i) =>
+      `<div class="tutorial-dot${i === idx ? " active" : ""}"></div>`
+    ).join("");
+    // Buttons
+    el("tutPrev").disabled = idx === 0;
+    el("tutNext").textContent = idx === TUT_PAGES.length - 1 ? "Let's go! 🚀" : "Next →";
+    el("tutNext").classList.toggle("primary", true);
+  }
+
+  el("tutorialBtn").addEventListener("click", openTutorial);
+  el("tutorialClose").addEventListener("click", closeTutorial);
+  el("tutorialOverlay").addEventListener("click", (e) => {
+    if (e.target === el("tutorialOverlay")) closeTutorial();
+  });
+
+  el("tutPrev").addEventListener("click", () => { if (tutIdx > 0) renderTutPage(tutIdx - 1); });
+  el("tutNext").addEventListener("click", () => {
+    if (tutIdx < TUT_PAGES.length - 1) renderTutPage(tutIdx + 1);
+    else closeTutorial();
+  });
+
+  document.querySelectorAll(".tutorial-tab").forEach((tab, i) => {
+    tab.addEventListener("click", () => renderTutPage(i));
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (!el("tutorialOverlay").classList.contains("hidden")) {
+      if (e.key === "Escape") closeTutorial();
+      if (e.key === "ArrowRight") el("tutNext").click();
+      if (e.key === "ArrowLeft") el("tutPrev").click();
+    }
+  });
+})();

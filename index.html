@@ -121,6 +121,7 @@
       </div>
     </div>
 
+    <button class="tutorial-btn" id="tutorialBtn" title="How to play">?</button>
     <button class="profile-chip" id="profileChip">
       <img id="profileAvatar" src="https://avatars.githubusercontent.com/u/298894342?s=60&v=4" alt="" />
       <span id="profileName">anon</span>
@@ -573,6 +574,213 @@
       <div class="predictor-ticks" id="predictorTicks"></div>
       <div id="predictorTable" class="predictor-table-wrap"></div>
       <p class="admin-hint">Next 50 ticks (~2.5 min) · 3s per tick · deterministic engine</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ TUTORIAL MODAL ============ -->
+<div class="tutorial-overlay hidden" id="tutorialOverlay">
+  <div class="tutorial-modal">
+    <div class="tutorial-header">
+      <span class="tutorial-logo">📈</span>
+      <div>
+        <h2 class="tutorial-title">How to Play Platypus</h2>
+        <p class="tutorial-subtitle">The memecoin trading simulator</p>
+      </div>
+      <button class="tutorial-close" id="tutorialClose">✕</button>
+    </div>
+
+    <div class="tutorial-tabs">
+      <button class="tutorial-tab active" data-tut="basics">Basics</button>
+      <button class="tutorial-tab" data-tut="trading">Trading</button>
+      <button class="tutorial-tab" data-tut="shorts">Shorts</button>
+      <button class="tutorial-tab" data-tut="social">Social</button>
+      <button class="tutorial-tab" data-tut="tips">Pro Tips</button>
+    </div>
+
+    <!-- BASICS -->
+    <div class="tutorial-page active" data-tut="basics">
+      <div class="tut-section">
+        <div class="tut-icon">🪙</div>
+        <h3>Welcome to Platypus</h3>
+        <p>You start with <strong>$1,000 virtual cash</strong>. Your goal: grow your portfolio by trading <strong>$PLTY</strong>, a simulated memecoin whose price moves in real-time based on what everyone is doing.</p>
+      </div>
+      <div class="tut-cards">
+        <div class="tut-card green">
+          <span class="tut-card-icon">📊</span>
+          <strong>Live Chart</strong>
+          <p>Candlestick chart showing price history. Every buy and sell — including yours — appears as a marker.</p>
+        </div>
+        <div class="tut-card purple">
+          <span class="tut-card-icon">👥</span>
+          <strong>Live Feed</strong>
+          <p>See every trade made by every player in real-time. Watch for whale moves and follow the smart money.</p>
+        </div>
+        <div class="tut-card blue">
+          <span class="tut-card-icon">🏆</span>
+          <strong>Leaderboard</strong>
+          <p>Compete against other traders. Rankings update live. Portfolio, shorts, and prediction accuracy all tracked.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- TRADING -->
+    <div class="tutorial-page hidden" data-tut="trading">
+      <div class="tut-section">
+        <div class="tut-icon">💸</div>
+        <h3>Buying &amp; Selling</h3>
+        <p>Tap <strong>BUY</strong> or <strong>SELL</strong> to open the trade sheet. Enter a USD amount or use the quick buttons.</p>
+      </div>
+      <div class="tut-steps">
+        <div class="tut-step">
+          <span class="tut-step-num green">1</span>
+          <div>
+            <strong>Tap BUY</strong>
+            <p>Enter how many dollars of $PLTY you want. Your buy pushes the price up slightly (market impact).</p>
+          </div>
+        </div>
+        <div class="tut-step">
+          <span class="tut-step-num red">2</span>
+          <div>
+            <strong>Tap SELL</strong>
+            <p>Enter what % of your holdings to sell. Larger sells push the price down — time it right.</p>
+          </div>
+        </div>
+        <div class="tut-step">
+          <span class="tut-step-num yellow">3</span>
+          <div>
+            <strong>"Calling It" Predictions</strong>
+            <p>Before trading, optionally write a prediction like <em>"dumping soon 📉"</em>. If you're right, it shows on the leaderboard accuracy tab.</p>
+          </div>
+        </div>
+        <div class="tut-step">
+          <span class="tut-step-num blue">4</span>
+          <div>
+            <strong>Quick Buttons</strong>
+            <p>Customise the quick-buy ($25/$100/$500) and quick-sell (25%/50%/100%) buttons in Wallet settings.</p>
+          </div>
+        </div>
+      </div>
+      <div class="tut-note">
+        💡 Your trades appear as <span style="color:#7cff6b">green ▲</span> (buy) and <span style="color:#ff3d6e">red ▼</span> (sell) avatar markers on the chart.
+      </div>
+    </div>
+
+    <!-- SHORTS -->
+    <div class="tutorial-page hidden" data-tut="shorts">
+      <div class="tut-section">
+        <div class="tut-icon">📉</div>
+        <h3>Short Selling</h3>
+        <p>Think the price is going to crash? <strong>Open a short</strong> to profit when it falls. There's a <strong>10% opening fee</strong> (cost to borrow).</p>
+      </div>
+      <div class="tut-steps">
+        <div class="tut-step">
+          <span class="tut-step-num purple">1</span>
+          <div>
+            <strong>Open Short</strong>
+            <p>Tap <strong>SHORT</strong> and enter an amount. $100 short = $10 fee burned, $90 collateral locked. Your position opens at the current price.</p>
+          </div>
+        </div>
+        <div class="tut-step">
+          <span class="tut-step-num purple">2</span>
+          <div>
+            <strong>Price Falls → You Profit</strong>
+            <p>Profit = notional × price drop %. Price drops 20% on a $100 short = +$20 profit. Cover to collect.</p>
+          </div>
+        </div>
+        <div class="tut-step">
+          <span class="tut-step-num red">3</span>
+          <div>
+            <strong>Price Rises → You Lose</strong>
+            <p>Max loss is capped at your collateral ($90). You can't lose more than you put in.</p>
+          </div>
+        </div>
+        <div class="tut-step">
+          <span class="tut-step-num green">4</span>
+          <div>
+            <strong>Cover Short</strong>
+            <p>Tap <strong>COVER SHORT</strong> in your wallet to close the position and collect payout. Short opens and closes show as <span style="color:#a78bfa">purple ◆</span> markers on the chart.</p>
+          </div>
+        </div>
+      </div>
+      <div class="tut-note">
+        ⚠️ You can only hold <strong>one short at a time</strong>. Cover before opening a new one.
+      </div>
+    </div>
+
+    <!-- SOCIAL -->
+    <div class="tutorial-page hidden" data-tut="social">
+      <div class="tut-section">
+        <div class="tut-icon">🌐</div>
+        <h3>Social Features</h3>
+        <p>Platypus is a multiplayer experience. Every action is visible to all traders.</p>
+      </div>
+      <div class="tut-cards">
+        <div class="tut-card green">
+          <span class="tut-card-icon">🐋</span>
+          <strong>Whale Alerts</strong>
+          <p>Trades over $1,000 get a whale 🐋 or dolphin 🐬 annotation on the chart. Watch for them — they move markets.</p>
+        </div>
+        <div class="tut-card purple">
+          <span class="tut-card-icon">👤</span>
+          <strong>Trader Profiles</strong>
+          <p>Tap any avatar in the feed or chart to view that trader's stats, history, and PnL. Learn from the best.</p>
+        </div>
+        <div class="tut-card blue">
+          <span class="tut-card-icon">📌</span>
+          <strong>Pin Trades</strong>
+          <p>Pin your best trades to your profile to flex on the competition. Access via your profile chip (top-right).</p>
+        </div>
+        <div class="tut-card yellow">
+          <span class="tut-card-icon">🎯</span>
+          <strong>Accuracy Board</strong>
+          <p>The accuracy leaderboard ranks who best predicts market direction. Make predictions on every trade to climb it.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- PRO TIPS -->
+    <div class="tutorial-page hidden" data-tut="tips">
+      <div class="tut-section">
+        <div class="tut-icon">🧠</div>
+        <h3>Pro Tips</h3>
+        <p>Strategies used by top-ranked traders.</p>
+      </div>
+      <div class="tut-tips">
+        <div class="tut-tip">
+          <span>📊</span>
+          <div><strong>Watch the feed before trading.</strong> If you see multiple buys in a row, price is trending up. Follow the momentum or fade it — your call.</div>
+        </div>
+        <div class="tut-tip">
+          <span>⏱️</span>
+          <div><strong>Time your shorts.</strong> After a large whale buy, price often retraces. Open a short at the peak and cover near the bottom.</div>
+        </div>
+        <div class="tut-tip">
+          <span>💎</span>
+          <div><strong>Diamond hands vs quick flips.</strong> Long-term holders benefit from compounding. Quick traders need to nail timing — market impact eats into thin margins.</div>
+        </div>
+        <div class="tut-tip">
+          <span>🎯</span>
+          <div><strong>Make predictions every trade.</strong> Even if you're wrong, building accuracy history gets you on the accuracy leaderboard.</div>
+        </div>
+        <div class="tut-tip">
+          <span>🐋</span>
+          <div><strong>Watch for whale markers on the chart.</strong> Big trades create visible price impact — anticipate the aftermath.</div>
+        </div>
+        <div class="tut-tip">
+          <span>💰</span>
+          <div><strong>Don't FOMO all-in.</strong> Keep some cash reserve so you can buy dips or open shorts when opportunities appear.</div>
+        </div>
+      </div>
+      <div class="tut-note" style="margin-top:16px;">
+        🏆 Top of the leaderboard = <strong>portfolio value</strong> (cash + holdings + short PnL). Grow everything.
+      </div>
+    </div>
+
+    <div class="tutorial-footer">
+      <button class="tut-nav-btn" id="tutPrev">← Prev</button>
+      <div class="tutorial-dots" id="tutorialDots"></div>
+      <button class="tut-nav-btn primary" id="tutNext">Next →</button>
     </div>
   </div>
 </div>
