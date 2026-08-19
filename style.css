@@ -153,6 +153,60 @@ a{ color:inherit; }
 .btn-primary:hover{ filter:brightness(1.08); }
 .btn-buy{ background:linear-gradient(180deg, var(--toxic), #55d942); color:#07160a; flex:1.3; }
 .btn-sell{ background:var(--surface-3); color:var(--venom); border:1px solid rgba(255,61,110,0.35); flex:1; }
+.btn-short{ background:linear-gradient(180deg,#7c3aed,#5b21b6); color:#fff; border:1px solid rgba(139,92,246,0.4); flex:1; }
+.btn-short:hover{ filter:brightness(1.12); }
+
+/* Short position card */
+.short-position-card {
+  margin: 10px 0 4px;
+  background: linear-gradient(135deg, rgba(124,58,237,0.15), rgba(91,33,182,0.1));
+  border: 1px solid rgba(139,92,246,0.35);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.short-pos-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.short-pos-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: #a78bfa;
+}
+.short-cover-btn {
+  background: linear-gradient(135deg,#7c3aed,#5b21b6);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  letter-spacing: 0.3px;
+}
+.short-cover-btn:hover { filter: brightness(1.15); }
+.short-pos-rows { display: flex; flex-direction: column; gap: 4px; }
+.short-pos-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: rgba(255,255,255,0.6);
+}
+.short-pos-row span:last-child { color: #fff; font-weight: 600; font-variant-numeric: tabular-nums; }
+.short-pnl.up   { color: #00e5a0 !important; }
+.short-pnl.down { color: #ff3d6e !important; }
+
+/* Sheet short mode */
+.sheet.shorting .slide-track { background: linear-gradient(90deg,#7c3aed,#5b21b6); }
+.slide-track.shorting { background: linear-gradient(90deg,#7c3aed,#5b21b6) !important; }
+
+@keyframes shortCardPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(139,92,246,0.6); }
+  70%  { box-shadow: 0 0 0 10px rgba(139,92,246,0); }
+  100% { box-shadow: 0 0 0 0 rgba(139,92,246,0); }
+}
 .btn-ghost{ background:transparent; border:1px solid var(--border-strong); color:var(--text-dim); }
 .btn-ghost:hover{ color:var(--text); border-color:var(--text-dim); }
 
@@ -937,6 +991,56 @@ button:focus-visible, input:focus-visible{ outline:2px solid var(--toxic); outli
 }
 .predictor-tick.up   { background: rgba(0,229,160,0.18); color: #00e5a0; }
 .predictor-tick.down { background: rgba(255,61,110,0.18); color: #ff3d6e; }
+.predictor-sparkline-wrap {
+  margin: 8px 0 6px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.07);
+}
+.predictor-sparkline {
+  display: block;
+  width: 100%;
+  height: 64px;
+}
+.predictor-table-wrap {
+  margin-top: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.15) transparent;
+}
+.predictor-price-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.predictor-price-table th {
+  position: sticky;
+  top: 0;
+  background: rgba(20,20,35,0.95);
+  color: rgba(255,255,255,0.45);
+  font-weight: 600;
+  text-align: left;
+  padding: 5px 10px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.predictor-price-table td {
+  padding: 4px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  color: rgba(255,255,255,0.75);
+  font-variant-numeric: tabular-nums;
+}
+.predictor-price-table tr:last-child td { border-bottom: none; }
+.pt-num  { color: rgba(255,255,255,0.35) !important; font-size: 11px; }
+.pt-price { font-weight: 600; color: #fff !important; }
+.pt-chg.up   { color: #00e5a0 !important; }
+.pt-chg.down { color: #ff3d6e !important; }
 
 /* ===========================================================
    SHARE TRADE PROMPT

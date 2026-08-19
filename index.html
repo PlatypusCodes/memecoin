@@ -179,6 +179,7 @@
 
       <div class="trade-actions">
         <button class="btn btn-sell" id="openSell">Sell</button>
+        <button class="btn btn-short" id="openShort">Short</button>
         <button class="btn btn-buy" id="openBuy">Buy $PLTY</button>
       </div>
     </section>
@@ -232,6 +233,20 @@
           <div class="wallet-row wallet-pnl-row">
             <span>Realized P&amp;L</span>
             <span id="walletRealized">$0.00</span>
+          </div>
+        </div>
+
+        <!-- Short position card -->
+        <div class="short-position-card hidden" id="shortPositionCard">
+          <div class="short-pos-header">
+            <span class="short-pos-label">📉 Short Position Open</span>
+            <button class="short-cover-btn" id="coverShortBtn">Cover</button>
+          </div>
+          <div class="short-pos-rows">
+            <div class="short-pos-row"><span>Entry Price</span><span id="shortEntryPrice">—</span></div>
+            <div class="short-pos-row"><span>Size</span><span id="shortSize">—</span></div>
+            <div class="short-pos-row"><span>Current Price</span><span id="shortCurrentPrice">—</span></div>
+            <div class="short-pos-row"><span>Unrealised P&amp;L</span><span id="shortPnl" class="short-pnl">—</span></div>
           </div>
         </div>
 
@@ -547,8 +562,10 @@
         <span class="predictor-direction" id="predictorDirection">—</span>
         <span class="predictor-detail" id="predictorDetail">Loading…</span>
       </div>
+      <div id="predictorSparkline" class="predictor-sparkline-wrap"></div>
       <div class="predictor-ticks" id="predictorTicks"></div>
-      <p class="admin-hint">Next 10 ticks computed from the deterministic price engine.</p>
+      <div id="predictorTable" class="predictor-table-wrap"></div>
+      <p class="admin-hint">Next 50 ticks (~2.5 min) · 3s per tick · deterministic engine</p>
     </div>
   </div>
 </div>

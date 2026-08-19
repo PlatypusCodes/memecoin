@@ -1226,6 +1226,9 @@ function renderWallet() {
     rEl.className = realizedPnl >= 0 ? "up" : "down";
   }
 
+  // Short position card
+  renderShortPosition();
+
   // Track portfolio history for sparkline
   const now = Date.now();
   if (lastPortfolioValue !== total) {
@@ -2310,6 +2313,9 @@ function applyMaxAmount(mode) {
   if (mode === "buy") {
     sheetSellAll = false;
     sheetAmount = String(Math.floor((currentUser?.balance || 0) * 100) / 100);
+  } else if (mode === "short") {
+    sheetSellAll = false;
+    sheetAmount = String(Math.floor((currentUser?.balance || 0) * 100) / 100);
   } else {
     sheetSellAll = true;
     const usdVal = (currentUser?.holdings || 0) * price;
@@ -2338,9 +2344,15 @@ function openSheet(mode) {
   sheetAmount = "";
   el("sheetError").textContent = "";
   el("callingItInput").value = "";
-  el("sheetTitle").textContent = mode === "buy" ? "Buy $PLTY" : "Sell $PLTY";
-  el("slideLabel").textContent = mode === "buy" ? "Slide to Buy" : "Slide to Sell";
-  el("slideConfirm").querySelector(".slide-track").className = "slide-track" + (mode === "sell" ? " selling" : "");
+  const titles  = { buy: "Buy $PLTY", sell: "Sell $PLTY", short: "Open Short 📉" };
+  const labels  = { buy: "Slide to Buy", sell: "Slide to Sell", short: "Slide to Short" };
+  el("sheetTitle").textContent = titles[mode] || "Buy $PLTY";
+  el("slideLabel").textContent = labels[mode] || "Slide to Buy";
+  const trackClass = mode === "sell" ? " selling" : mode === "short" ? " shorting" : "";
+  el("slideConfirm").querySelector(".slide-track").className = "slide-track" + trackClass;
+  el("tradeSheet").classList.toggle("shorting", mode === "short");
+  // Show/hide calling-it field (not relevant for shorts)
+  el("callingItInput").closest(".calling-it-wrap").style.display = mode === "short" ? "none" : "";
   resetSlider();
 
   // Auto-apply max if the user chose it last time for this mode
@@ -2361,8 +2373,38 @@ function openSheet(mode) {
 function closeSheet() {
   el("sheetBackdrop").classList.add("hidden");
 }
+el("coverShortBtn").addEventListener("click", async () => {
+  el("coverShortBtn").disabled = true;
+  el("coverShortBtn").textContent = "Covering…";
+  try {
+    await executeCoverShort();
+  } catch (e) {
+    toast(e.message || "Cover failed.", true);
+  } finally {
+    el("coverShortBtn").disabled = false;
+    el("coverShortBtn").textContent = "Cover";
+  }
+});
+
 el("openBuy").addEventListener("click", () => openSheet("buy"));
 el("openSell").addEventListener("click", () => openSheet("sell"));
+el("openShort").addEventListener("click", () => {
+  if (!currentUser) { toast("Log in to short", true); return; }
+  if (currentUser.shortPosition && currentUser.shortPosition.size > 0) {
+    // Already have an open short — scroll to wallet and highlight it
+    el("panelWallet").scrollIntoView({ behavior: "smooth" });
+    document.querySelectorAll(".panel-tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".panel").forEach(p => p.classList.add("hidden"));
+    el("panelWallet").classList.remove("hidden");
+    const card = el("shortPositionCard");
+    card.style.animation = "none";
+    card.offsetHeight; // reflow
+    card.style.animation = "shortCardPulse 0.6s ease";
+    toast("You already have a short open — cover it first!", true);
+    return;
+  }
+  openSheet("short");
+});
 el("sheetClose").addEventListener("click", closeSheet);
 el("sheetBackdrop").addEventListener("click", (e) => { if (e.target === el("sheetBackdrop")) closeSheet(); });
 
@@ -2374,6 +2416,10 @@ function renderSheetConvert() {
   const amt = parseFloat(sheetAmount || "0") || 0;
   if (sheetMode === "buy") {
     el("sheetConvert").textContent = `≈ ${(amt / price).toFixed(8)} PLTY`;
+  } else if (sheetMode === "short") {
+    const fee = amt * SHORT_OPEN_FEE;
+    const collateral = amt - fee;
+    el("sheetConvert").textContent = `Collateral: ${fmtUsd(collateral)} · Fee: ${fmtUsd(fee)}`;
   } else {
     el("sheetConvert").textContent = `≈ ${(amt / price).toFixed(8)} PLTY worth`;
   }
@@ -2471,6 +2517,13 @@ async function confirmTrade(isQuick = false) {
 
   try {
     _lastTradeWasLocal = false;
+    if (sheetMode === "short") {
+      await executeOpenShort(amt);
+      toast(`📉 Short opened for ${fmtUsd(amt)} — profit when price drops!`, false);
+      sheetLastMax[sheetMode] = false;
+      setTimeout(closeSheet, 450);
+      return;
+    }
     await executeTrade(sheetMode, amt, sheetSellAll, callingIt);
     // Skip success toast for local sells — _executeLocalSell already showed the quota warning
     if (!_lastTradeWasLocal) {
@@ -2488,6 +2541,100 @@ async function confirmTrade(isQuick = false) {
     errEl.textContent = e.message || "Trade failed.";
     resetSlider();
   }
+}
+
+// ===========================================================
+// SHORT SELLING
+// ===========================================================
+// Mechanics: user puts up collateral (usdAmount) from their cash balance.
+// We record the entry price. When they cover, they get back collateral
+// ± the profit/loss: profit = (entryPrice - currentPrice) / entryPrice * size
+// Max loss is capped at the collateral (can't go below zero balance).
+// A 10% fee is charged on the collateral to open (borrowing fee).
+
+const SHORT_OPEN_FEE = 0.10; // 10% of collateral taken as borrow fee
+
+async function executeOpenShort(usdAmount) {
+  if (!currentUser) throw new Error("Not logged in.");
+  if (currentUser.shortPosition && currentUser.shortPosition.size > 0)
+    throw new Error("Close your existing short first.");
+  const balance = currentUser.balance || 0;
+  if (usdAmount > balance + 1e-9) throw new Error("Not enough cash.");
+  if (usdAmount < 1) throw new Error("Minimum short size is $1.");
+  const entryPrice = safePrice(_lastKnownPrice);
+  const fee = usdAmount * SHORT_OPEN_FEE;
+  const collateral = usdAmount - fee; // what's locked up (fee burned)
+  const uref = doc(usersCol, currentUser.uid);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(uref);
+    if (!snap.exists()) throw new Error("User not found.");
+    const u = snap.data();
+    const bal = u.balance || 0;
+    if (usdAmount > bal + 1e-9) throw new Error("Not enough cash.");
+    tx.update(uref, {
+      balance: bal - usdAmount, // lock collateral + fee
+      shortPosition: { size: collateral, entryPrice, openedAt: Date.now() }
+    });
+  });
+  // Optimistic local update
+  currentUser.balance = (currentUser.balance || 0) - usdAmount;
+  currentUser.shortPosition = { size: collateral, entryPrice, openedAt: Date.now() };
+  renderWallet();
+}
+
+async function executeCoverShort() {
+  if (!currentUser) throw new Error("Not logged in.");
+  const pos = currentUser.shortPosition;
+  if (!pos || pos.size <= 0) throw new Error("No short position to cover.");
+  const currentPrice = safePrice(_lastKnownPrice);
+  const entryPrice   = pos.entryPrice;
+  const collateral   = pos.size;
+  // P&L: positive if price fell, negative if price rose
+  const priceDrop  = (entryPrice - currentPrice) / entryPrice;
+  const pnl        = collateral * priceDrop;
+  // Cap loss at collateral (can't owe more than you put in)
+  const payout     = Math.max(0, collateral + pnl);
+  const uref = doc(usersCol, currentUser.uid);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(uref);
+    if (!snap.exists()) throw new Error("User not found.");
+    const u = snap.data();
+    const shortPnl = (u.shortRealizedPnl || 0) + pnl;
+    tx.update(uref, {
+      balance: (u.balance || 0) + payout,
+      shortPosition: null,
+      shortRealizedPnl: shortPnl,
+      realizedPnl: (u.realizedPnl || 0) + pnl,
+    });
+  });
+  // Optimistic local update
+  currentUser.balance = (currentUser.balance || 0) + payout;
+  currentUser.shortPosition = null;
+  currentUser.realizedPnl = (currentUser.realizedPnl || 0) + pnl;
+  renderWallet();
+  const pnlSign = pnl >= 0 ? "+" : "";
+  toast(pnl >= 0
+    ? `✅ Short covered! Profit: ${pnlSign}${fmtUsd(pnl)} 🤑`
+    : `❌ Short covered. Loss: ${fmtUsd(pnl)}`, false);
+}
+
+function renderShortPosition() {
+  const pos   = currentUser?.shortPosition;
+  const card  = el("shortPositionCard");
+  if (!pos || pos.size <= 0) { card.classList.add("hidden"); return; }
+  card.classList.remove("hidden");
+  const currentPrice = safePrice(marketState.price);
+  const entryPrice   = pos.entryPrice;
+  const priceDrop    = (entryPrice - currentPrice) / entryPrice;
+  const pnl          = pos.size * priceDrop;
+  const pnlPct       = (priceDrop * 100).toFixed(2);
+  const pnlSign      = pnl >= 0 ? "+" : "";
+  el("shortEntryPrice").textContent  = fmtUsd(entryPrice);
+  el("shortSize").textContent        = fmtUsd(pos.size) + " collateral";
+  el("shortCurrentPrice").textContent = fmtUsd(currentPrice);
+  const pnlEl = el("shortPnl");
+  pnlEl.textContent  = `${pnlSign}${fmtUsd(pnl)} (${pnlSign}${pnlPct}%)`;
+  pnlEl.className    = "short-pnl " + (pnl >= 0 ? "up" : "down");
 }
 
 async function executeTrade(mode, usdAmount, sellAll = false, callingIt = "", silent = false) {
@@ -3428,17 +3575,16 @@ let _predictorInterval = null;
 function runPredictor() {
   if (!isAdminUser() || !_adminPortalOpen) return;
 
-  const LOOK_AHEAD = 10; // ticks to preview
+  const LOOK_AHEAD = 50; // ticks to preview (~2.5 minutes at 3s/tick)
+  // Use the real engine tick index (floor of epoch/TICK_MS) for perfect alignment
+  const nowTick      = Math.floor(Date.now() / TICK_MS);
+  const currentTick  = _lastKnownTickIdx >= 0 ? Math.max(_lastKnownTickIdx, nowTick) : nowTick;
   const currentPrice = safePrice(_lastKnownPrice);
-  const currentTick  = _lastKnownTickIdx >= 0 ? _lastKnownTickIdx : 0;
 
-  // Simulate next LOOK_AHEAD ticks using the real price engine.
-  // We pass applyBoostDump = false for deterministic baseline; then
-  // separately overlay current boost/dump state so the admin sees exactly
-  // what will happen on-screen.
   const boostActive = _boostModeActive && Date.now() < _boostModeEndTime;
   const dumpActive  = _dumpModeActive  && Date.now() < _dumpModeEndTime;
 
+  // Compute future prices using the EXACT same logic as stepPrice()
   let p = currentPrice;
   const futurePrices = [];
   for (let i = 1; i <= LOOK_AHEAD; i++) {
@@ -3458,48 +3604,83 @@ function runPredictor() {
       changePct = drift + noise;
     }
     const ratio = p / STARTING_PRICE;
-    if (ratio < 0.15)       changePct += 0.06 + (1 - ratio) * 0.08;
-    else if (ratio < 0.4)   changePct += 0.025;
-    else if (ratio > 8)     changePct -= 0.02;
-    // Apply boost/dump overlay exactly as the engine does
+    if (ratio < 0.15)      changePct += 0.06 + (1 - ratio) * 0.08;
+    else if (ratio < 0.4)  changePct += 0.025;
+    else if (ratio > 8)    changePct -= 0.02;
     if (boostActive) changePct = Math.abs(changePct) + 0.02;
     if (dumpActive)  changePct = -(Math.abs(changePct) + 0.02);
     p = Math.max(p * (1 + changePct), STARTING_PRICE * 0.05);
     futurePrices.push(p);
   }
 
-  const finalPrice    = futurePrices[futurePrices.length - 1];
-  const overallUp     = finalPrice >= currentPrice;
-  const pctChange     = ((finalPrice - currentPrice) / currentPrice * 100).toFixed(2);
-  const upCount       = futurePrices.filter(fp => fp > currentPrice).length;
-  const confidence    = Math.round((upCount / LOOK_AHEAD) * 100);
+  const finalPrice = futurePrices[LOOK_AHEAD - 1];
+  const overallUp  = finalPrice >= currentPrice;
+  const pctChange  = ((finalPrice - currentPrice) / currentPrice * 100).toFixed(2);
+  const upCount    = futurePrices.filter((fp, i) => fp > (i === 0 ? currentPrice : futurePrices[i-1])).length;
+  const secsAhead  = LOOK_AHEAD * (TICK_MS / 1000);
 
-  // Update signal banner
-  const dirEl   = el("predictorDirection");
-  const detEl   = el("predictorDetail");
+  // --- Signal banner ---
+  const dirEl = el("predictorDirection");
+  const detEl = el("predictorDetail");
   if (boostActive) {
+    const secs = Math.ceil((_boostModeEndTime - Date.now()) / 1000);
     dirEl.textContent = "📈 UP";
     dirEl.className   = "predictor-direction up";
-    const secs = Math.ceil((_boostModeEndTime - Date.now()) / 1000);
-    detEl.innerHTML = `<strong>BOOST ACTIVE</strong> — price only goes up<br>+${pctChange}% over next ${LOOK_AHEAD} ticks · ${secs}s remaining`;
+    detEl.innerHTML   = `<strong>🚀 BOOST ACTIVE</strong> — guaranteed up<br>+${pctChange}% over ${LOOK_AHEAD} ticks · ${secs}s boost remaining`;
   } else if (dumpActive) {
+    const secs = Math.ceil((_dumpModeEndTime - Date.now()) / 1000);
     dirEl.textContent = "📉 DOWN";
     dirEl.className   = "predictor-direction down";
-    const secs = Math.ceil((_dumpModeEndTime - Date.now()) / 1000);
-    detEl.innerHTML = `<strong>DUMP ACTIVE</strong> — price only goes down<br>${pctChange}% over next ${LOOK_AHEAD} ticks · ${secs}s remaining`;
+    detEl.innerHTML   = `<strong>💀 DUMP ACTIVE</strong> — guaranteed down<br>${pctChange}% over ${LOOK_AHEAD} ticks · ${secs}s dump remaining`;
   } else {
     dirEl.textContent = overallUp ? "📈 UP" : "📉 DOWN";
     dirEl.className   = "predictor-direction " + (overallUp ? "up" : "down");
-    detEl.innerHTML   = `<strong>${overallUp ? "+" : ""}${pctChange}%</strong> over next ${LOOK_AHEAD} ticks<br>${upCount}↑ ${LOOK_AHEAD - upCount}↓ · ${confidence}% of ticks bullish`;
+    detEl.innerHTML   = `<strong>${overallUp ? "+" : ""}${pctChange}%</strong> over next ${LOOK_AHEAD} ticks (~${secsAhead}s)<br>${upCount}↑ ${LOOK_AHEAD - upCount}↓ out of ${LOOK_AHEAD} ticks`;
   }
 
-  // Tick-by-tick mini bar
+  // --- Sparkline SVG ---
+  const allPrices = [currentPrice, ...futurePrices];
+  const minP = Math.min(...allPrices);
+  const maxP = Math.max(...allPrices);
+  const range = maxP - minP || 1;
+  const W = 320, H = 64, pad = 4;
+  const toX = i => pad + (i / LOOK_AHEAD) * (W - pad * 2);
+  const toY = v => H - pad - ((v - minP) / range) * (H - pad * 2);
+  const pts = futurePrices.map((fp, i) => `${toX(i+1).toFixed(1)},${toY(fp).toFixed(1)}`).join(" ");
+  const lineColor = overallUp ? "#00e5a0" : "#ff3d6e";
+  const fillColor = overallUp ? "rgba(0,229,160,0.12)" : "rgba(255,61,110,0.12)";
+  const startPt   = `${toX(0).toFixed(1)},${toY(currentPrice).toFixed(1)}`;
+  const closePath = `${toX(LOOK_AHEAD).toFixed(1)},${H} ${toX(0).toFixed(1)},${H}`;
+  const sparkline = `<svg class="predictor-sparkline" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
+    <polygon points="${startPt} ${pts} ${closePath}" fill="${fillColor}"/>
+    <polyline points="${startPt} ${pts}" fill="none" stroke="${lineColor}" stroke-width="1.8" stroke-linejoin="round"/>
+  </svg>`;
+  el("predictorSparkline").innerHTML = sparkline;
+
+  // --- Tick-by-tick direction dots ---
   const ticksEl = el("predictorTicks");
   ticksEl.innerHTML = futurePrices.map((fp, i) => {
-    const prev    = i === 0 ? currentPrice : futurePrices[i - 1];
-    const isUp    = fp >= prev;
-    return `<div class="predictor-tick ${isUp ? "up" : "down"}" title="Tick +${i+1}: ${fmtUsd(fp)}">${isUp ? "▲" : "▼"}</div>`;
+    const prev   = i === 0 ? currentPrice : futurePrices[i - 1];
+    const isUp   = fp >= prev;
+    const pct    = ((fp - prev) / prev * 100).toFixed(1);
+    const secsTo = (i + 1) * (TICK_MS / 1000);
+    return `<div class="predictor-tick ${isUp ? "up" : "down"}" title="+${secsTo}s · ${fmtUsd(fp)} (${isUp ? "+" : ""}${pct}%)">${isUp ? "▲" : "▼"}</div>`;
   }).join("");
+
+  // --- Detailed price table (first 20 ticks) ---
+  const tableEl = el("predictorTable");
+  const tableRows = futurePrices.slice(0, 20).map((fp, i) => {
+    const prev   = i === 0 ? currentPrice : futurePrices[i - 1];
+    const isUp   = fp >= prev;
+    const pct    = ((fp - prev) / prev * 100).toFixed(2);
+    const secsTo = (i + 1) * (TICK_MS / 1000);
+    return `<tr>
+      <td class="pt-num">+${secsTo}s</td>
+      <td class="pt-price">${fmtUsd(fp)}</td>
+      <td class="pt-chg ${isUp ? "up" : "down"}">${isUp ? "▲" : "▼"} ${isUp ? "+" : ""}${pct}%</td>
+    </tr>`;
+  }).join("");
+  tableEl.innerHTML = `<table class="predictor-price-table"><thead><tr><th>Time</th><th>Price</th><th>Change</th></tr></thead><tbody>${tableRows}</tbody></table>`;
 }
 
 function startPredictor() {
