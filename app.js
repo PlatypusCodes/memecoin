@@ -1508,7 +1508,8 @@ async function renderLeaderboard() {
         if (u.shortPosition && u.shortPosition.size > 0) {
           const entryPrice = u.shortPosition.entryPrice || price;
           const priceDrop = (entryPrice - price) / entryPrice;
-          unrealized = u.shortPosition.size * priceDrop;
+          const notional = u.shortPosition.notional || u.shortPosition.size;
+          unrealized = notional * priceDrop;
         }
         const total = realized + unrealized;
         return { uid: u.uid, username: u.username || "anon", avatarUrl: u.avatarUrl, realized, unrealized, total };
@@ -2759,12 +2760,12 @@ async function executeOpenShort(usdAmount) {
     if (usdAmount > bal + 1e-9) throw new Error("Not enough cash.");
     tx.update(uref, {
       balance: bal - usdAmount, // lock collateral + fee
-      shortPosition: { size: collateral, entryPrice, openedAt: Date.now() }
+      shortPosition: { size: collateral, notional: usdAmount, entryPrice, openedAt: Date.now() }
     });
   });
   // Optimistic local update
   currentUser.balance = (currentUser.balance || 0) - usdAmount;
-  currentUser.shortPosition = { size: collateral, entryPrice, openedAt: Date.now() };
+  currentUser.shortPosition = { size: collateral, notional: usdAmount, entryPrice, openedAt: Date.now() };
   renderWallet();
 }
 
@@ -2775,9 +2776,11 @@ async function executeCoverShort() {
   const currentPrice = safePrice(_lastKnownPrice);
   const entryPrice   = pos.entryPrice;
   const collateral   = pos.size;
-  // P&L: positive if price fell, negative if price rose
+  // Notional is the full amount put in (collateral + fee). Falls back to collateral for old positions.
+  const notional     = pos.notional || collateral;
+  // P&L: positive if price fell, negative if price rose. Calculated on full notional exposure.
   const priceDrop  = (entryPrice - currentPrice) / entryPrice;
-  const pnl        = collateral * priceDrop;
+  const pnl        = notional * priceDrop;
   // Cap loss at collateral (can't owe more than you put in)
   const payout     = Math.max(0, collateral + pnl);
   const uref = doc(usersCol, currentUser.uid);
@@ -2811,8 +2814,9 @@ function renderShortPosition() {
   card.classList.remove("hidden");
   const currentPrice = safePrice(marketState.price);
   const entryPrice   = pos.entryPrice;
+  const notional     = pos.notional || pos.size; // full amount put in, fallback for old positions
   const priceDrop    = (entryPrice - currentPrice) / entryPrice;
-  const pnl          = pos.size * priceDrop;
+  const pnl          = notional * priceDrop;
   const pnlPct       = (priceDrop * 100).toFixed(2);
   const pnlSign      = pnl >= 0 ? "+" : "";
   el("shortEntryPrice").textContent  = fmtUsd(entryPrice);
