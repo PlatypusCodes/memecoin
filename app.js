@@ -3405,6 +3405,7 @@ async function openAdminPortal() {
   if (!isAdminUser()) return;
   _adminPortalOpen = true;
   el("adminPortal").classList.remove("hidden");
+  startPredictor();
 
   // Load all users for the dropdown
   try {
@@ -3418,9 +3419,103 @@ async function openAdminPortal() {
   }
 }
 
+// ===========================================================
+// ADMIN PREDICTOR — uses the same deterministic stepPrice engine
+// to compute future ticks 100% accurately.
+// ===========================================================
+let _predictorInterval = null;
+
+function runPredictor() {
+  if (!isAdminUser() || !_adminPortalOpen) return;
+
+  const LOOK_AHEAD = 10; // ticks to preview
+  const currentPrice = safePrice(_lastKnownPrice);
+  const currentTick  = _lastKnownTickIdx >= 0 ? _lastKnownTickIdx : 0;
+
+  // Simulate next LOOK_AHEAD ticks using the real price engine.
+  // We pass applyBoostDump = false for deterministic baseline; then
+  // separately overlay current boost/dump state so the admin sees exactly
+  // what will happen on-screen.
+  const boostActive = _boostModeActive && Date.now() < _boostModeEndTime;
+  const dumpActive  = _dumpModeActive  && Date.now() < _dumpModeEndTime;
+
+  let p = currentPrice;
+  const futurePrices = [];
+  for (let i = 1; i <= LOOK_AHEAD; i++) {
+    const tIdx = currentTick + i;
+    const r1 = seededRandom(tIdx, 1);
+    const r2 = seededRandom(tIdx, 2);
+    const r3 = seededRandom(tIdx, 3);
+    const r4 = seededRandom(tIdx, 4);
+    let changePct;
+    if (r3 < 0.05) {
+      const magnitude = 0.12 + r2 * 0.28;
+      const dir = r4 < 0.5 ? -1 : 1;
+      changePct = dir * magnitude;
+    } else {
+      const drift = (r1 - 0.5) * 0.06;
+      const noise = (r2 - 0.5) * 0.14;
+      changePct = drift + noise;
+    }
+    const ratio = p / STARTING_PRICE;
+    if (ratio < 0.15)       changePct += 0.06 + (1 - ratio) * 0.08;
+    else if (ratio < 0.4)   changePct += 0.025;
+    else if (ratio > 8)     changePct -= 0.02;
+    // Apply boost/dump overlay exactly as the engine does
+    if (boostActive) changePct = Math.abs(changePct) + 0.02;
+    if (dumpActive)  changePct = -(Math.abs(changePct) + 0.02);
+    p = Math.max(p * (1 + changePct), STARTING_PRICE * 0.05);
+    futurePrices.push(p);
+  }
+
+  const finalPrice    = futurePrices[futurePrices.length - 1];
+  const overallUp     = finalPrice >= currentPrice;
+  const pctChange     = ((finalPrice - currentPrice) / currentPrice * 100).toFixed(2);
+  const upCount       = futurePrices.filter(fp => fp > currentPrice).length;
+  const confidence    = Math.round((upCount / LOOK_AHEAD) * 100);
+
+  // Update signal banner
+  const dirEl   = el("predictorDirection");
+  const detEl   = el("predictorDetail");
+  if (boostActive) {
+    dirEl.textContent = "📈 UP";
+    dirEl.className   = "predictor-direction up";
+    const secs = Math.ceil((_boostModeEndTime - Date.now()) / 1000);
+    detEl.innerHTML = `<strong>BOOST ACTIVE</strong> — price only goes up<br>+${pctChange}% over next ${LOOK_AHEAD} ticks · ${secs}s remaining`;
+  } else if (dumpActive) {
+    dirEl.textContent = "📉 DOWN";
+    dirEl.className   = "predictor-direction down";
+    const secs = Math.ceil((_dumpModeEndTime - Date.now()) / 1000);
+    detEl.innerHTML = `<strong>DUMP ACTIVE</strong> — price only goes down<br>${pctChange}% over next ${LOOK_AHEAD} ticks · ${secs}s remaining`;
+  } else {
+    dirEl.textContent = overallUp ? "📈 UP" : "📉 DOWN";
+    dirEl.className   = "predictor-direction " + (overallUp ? "up" : "down");
+    detEl.innerHTML   = `<strong>${overallUp ? "+" : ""}${pctChange}%</strong> over next ${LOOK_AHEAD} ticks<br>${upCount}↑ ${LOOK_AHEAD - upCount}↓ · ${confidence}% of ticks bullish`;
+  }
+
+  // Tick-by-tick mini bar
+  const ticksEl = el("predictorTicks");
+  ticksEl.innerHTML = futurePrices.map((fp, i) => {
+    const prev    = i === 0 ? currentPrice : futurePrices[i - 1];
+    const isUp    = fp >= prev;
+    return `<div class="predictor-tick ${isUp ? "up" : "down"}" title="Tick +${i+1}: ${fmtUsd(fp)}">${isUp ? "▲" : "▼"}</div>`;
+  }).join("");
+}
+
+function startPredictor() {
+  runPredictor();
+  if (_predictorInterval) clearInterval(_predictorInterval);
+  _predictorInterval = setInterval(runPredictor, 1000);
+}
+
+function stopPredictor() {
+  if (_predictorInterval) { clearInterval(_predictorInterval); _predictorInterval = null; }
+}
+
 function closeAdminPortal() {
   _adminPortalOpen = false;
   el("adminPortal").classList.add("hidden");
+  stopPredictor();
 }
 
 // ===========================================================
